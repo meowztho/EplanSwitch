@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+from functools import partial
 import json
 import logging
 import os
@@ -22,8 +23,8 @@ from PIL import Image, ImageDraw
 import pystray
 
 
-APP_NAME = "Energieplan-Umschalter"
-APP_VERSION = "1.3.0"
+APP_NAME = "ePlan Switch"
+APP_VERSION = "1.5.0"
 CONFIG_FILE_NAME = "config.json"
 LOG_FILE_NAME = "energieplan-umschalter.log"
 MUTEX_NAME = "Local\\Energieplan-Umschalter-6D7F0D5E"
@@ -94,6 +95,14 @@ VK_CODES: dict[str, int] = {
 
 BOOST_VALUES = [0, 1, 2, 3, 4]
 COOLING_VALUES: list[int | None] = [None, 0, 1]
+KNOWN_PROCESSOR_ALIASES = {
+    "PROCTHROTTLEMIN", "PROCTHROTTLEMIN1",
+    "PROCTHROTTLEMAX", "PROCTHROTTLEMAX1",
+    "PERFBOOSTMODE", "SYSCOOLPOL",
+    "CPMINCORES", "CPMINCORES1",
+    "CPMAXCORES", "CPMAXCORES1",
+    "PERFEPP", "PERFEPP1",
+}
 
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "de": {
@@ -111,7 +120,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "shift": "Umschalt",
         "win": "Win",
         "startup_popup": "Beim Start ein kurzes Status-Popup anzeigen",
-        "apply_on_start": "Beim Start die Werte des aktuell aktiven Umschaltprofils erneut anwenden",
+        "apply_on_start": "Beim Start die Werte des aktuell aktiven Profils erneut anwenden",
         "popup": "Popup",
         "visible_ms": "Sichtbar (ms)",
         "fade_ms": "Ausblenddauer (ms)",
@@ -121,7 +130,18 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "save": "Speichern",
         "save_apply": "Speichern und ausgewähltes Profil anwenden",
         "profile_name": "Profilname",
+        "profile_enabled": "Beim Hotkey-Wechsel verwenden",
+        "add_profile": "Neues Profil hinzufügen",
+        "remove_profile": "Profil entfernen",
+        "new_profile": "Neues Profil {number}",
+        "confirm_remove_profile_title": "Profil entfernen",
+        "confirm_remove_profile": "Soll das Profil '{name}' wirklich entfernt werden?",
+        "cannot_remove_last_profile": "Mindestens ein Profil muss erhalten bleiben.",
+        "at_least_one_enabled": "Mindestens ein Profil muss für den Hotkey-Wechsel aktiviert sein.",
+        "disabled_profile_note": "Deaktivierte Profile werden beim Hotkey-Wechsel übersprungen, bleiben aber bearbeitbar.",
+        "profile_disabled_suffix": "aus",
         "windows_plan": "Windows-Energieplan",
+        "missing_plan_selection": "Fehlender Plan | {guid}",
         "mains": "Netzbetrieb",
         "battery": "Akkubetrieb",
         "cpu_min": "CPU Minimum (%)",
@@ -131,6 +151,41 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "hibernate_timeout": "Ruhezustand nach (Min.)",
         "boost_mode": "CPU-Boostmodus",
         "cooling_policy": "Systemkühlungsrichtlinie",
+        "advanced_cpu": "Prozessorleistung",
+        "core_parking": "Core Parking",
+        "core_parking_mode": "Core-Parking-Modus",
+        "parking_unchanged": "Nicht verändern",
+        "parking_custom": "Benutzerdefiniert",
+        "parking_disabled": "Core Parking deaktivieren (alle Kerne aktiv)",
+        "parking_min": "Mindestens aktive Kerne (%)",
+        "parking_max": "Höchstens aktive Kerne (%)",
+        "core_parking_note": "100 % Minimum hält alle Kerne aktiv. Ein Maximum unter 100 % kann die Leistung begrenzen.",
+        "energy_preference": "Energie-/Leistungspräferenz (EPP)",
+        "energy_preference_enable": "Energiepräferenz für diesen Betriebsmodus festlegen",
+        "energy_preference_value": "EPP-Wert (0 = Leistung, 100 = Energiesparen)",
+        "energy_preference_note": "0 bevorzugt Leistung, 100 bevorzugt Energiesparen. Die CPU-Maximalgrenze hat Vorrang.",
+        "timeouts": "Bildschirm und Energiesparzeiten",
+        "interaction_summary": "Warnungen",
+        "interaction_ok": "Keine Konflikte erkannt.",
+        "interaction_cpu_range": "CPU Minimum liegt über CPU Maximum.",
+        "interaction_boost_cap": "CPU Maximum unter 100 % kann Turbo Boost begrenzen oder vollständig wirkungslos machen.",
+        "interaction_epp_boost": "Aggressiver Boost und ein hoher EPP-Wert verfolgen unterschiedliche Ziele; Windows versucht zwischen Leistung und Sparen abzuwägen.",
+        "interaction_parking_limit": "Ein Core-Parking-Maximum unter 100 % begrenzt, wie viele logische Prozessoren gleichzeitig genutzt werden können.",
+        "interaction_parking_disabled": "Core Parking ist deaktiviert.",
+        "interaction_parking_range": "Die Mindestzahl aktiver Kerne darf nicht über der Höchstzahl liegen.",
+        "cpu_compatibility": "CPU-Erkennung",
+        "detected_cpu": "Erkannte CPU: {name}",
+        "cpu_details": "Hersteller: {vendor} | Logische Prozessoren: {logical} | Architektur: {architecture}",
+        "cpu_features": "Von Windows erkannte Profilfunktionen: {features}",
+        "cpu_features_unknown": "Die verfügbaren CPU-Profilfunktionen konnten nicht vollständig ermittelt werden. Standardwerte werden weiterhin vorsichtig angewendet.",
+        "auto_class1": "Zusätzliche Hybrid-CPU-Einstellungen automatisch anwenden",
+        "auto_class1_note": "Nur wenn Windows diese Einstellungen unterstützt. Auf normalen Intel- und AMD-CPUs hat die Option keine Wirkung.",
+        "feature_cpu_range": "CPU-Leistungsbereich",
+        "feature_boost": "Boost",
+        "feature_cooling": "Kühlungsrichtlinie",
+        "feature_parking": "Core Parking",
+        "feature_epp": "Energiepräferenz",
+        "feature_class1": "Effizienzklasse 1 / Hybrid",
         "boost_0": "0 - Deaktiviert",
         "boost_1": "1 - Aktiviert",
         "boost_2": "2 - Aggressiv",
@@ -139,8 +194,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "cool_none": "Leer - Nicht verändern",
         "cool_0": "0 - Passiv",
         "cool_1": "1 - Aktiv",
-        "time_note": "Bei Zeitwerten bedeutet 0 = Nie. Ein leeres Feld verändert die vorhandene Windows-Einstellung nicht. Die Werte werden beim Wechsel auf das jeweilige Profil angewendet.",
-        "boost_note": "Boost 0 deaktiviert den Turbo. Boost 2 ist aggressiv und für das Leistungsprofil gedacht. Bei Bildschirm, Standby und Ruhezustand gilt: 0 = Nie, leer = unverändert.",
+        "time_note": "Zeitwerte: 0 = Nie, leer = vorhandene Windows-Einstellung beibehalten.",
+        "boost_note": "Boost 0 = aus. Boost 2 = aggressiv. CPU-Maximum und EPP können den Boost zusätzlich begrenzen.",
         "installed_plans": "Installierte Energiepläne",
         "status": "Status",
         "name": "Name",
@@ -153,11 +208,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "remove_selected": "Ausgewählten Plan deaktivieren / entfernen",
         "restore_standard": "Fehlenden Standardplan installieren / wiederherstellen",
         "standard_plan": "Windows-Standardplan",
-        "plan_manager_note": "Deaktivieren entfernt einen Energieplan aus Windows. Der aktive Plan und Pläne, die einem Profil zugeordnet sind, werden geschützt. Gelöschte benutzerdefinierte Pläne können nicht automatisch wiederhergestellt werden.",
+        "plan_manager_note": "Entfernen löscht den Energieplan aus Windows. Aktive oder einem Profil zugeordnete Pläne sind geschützt.",
         "select_installed": "Wähle zuerst einen installierten Energieplan aus.",
         "select_standard": "Wähle zuerst einen Windows-Standardplan aus.",
         "cannot_remove_active": "Der aktuell aktive Energieplan kann nicht entfernt werden. Aktiviere zuerst einen anderen Plan.",
-        "cannot_remove_profile": "Dieser Energieplan ist einem Umschaltprofil zugeordnet. Weise dem Profil zuerst einen anderen Plan zu und speichere die Konfiguration.",
+        "cannot_remove_profile": "Dieser Energieplan ist einem Profil zugeordnet. Weise dem Profil zuerst einen anderen Plan zu und speichere.",
         "confirm_remove_title": "Energieplan entfernen",
         "confirm_remove": "Soll der Energieplan '{name}' wirklich aus Windows entfernt werden?\n\nBenutzerdefinierte Einstellungen dieses Plans gehen verloren.",
         "plan_removed": "Energieplan entfernt: {name}",
@@ -181,14 +236,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "open_folder": "Programmordner öffnen",
         "exit": "Beenden",
         "version": "Version {version}",
-        "already_running": "Der Energieplan-Umschalter läuft bereits.",
+        "already_running": "ePlan Switch läuft bereits.",
         "hotkey_unknown": "Unbekannte Taste: {key}",
         "hotkey_failed": "{hotkey} konnte nicht registriert werden (Windows-Fehler {code}). Öffne die Konfiguration und wähle eine andere Kombination.",
         "profile_plan_missing": "Der Windows-Energieplan für '{name}' wurde nicht gefunden. Öffne die Energieplan-Verwaltung und installiere einen fehlenden Standardplan oder wähle einen vorhandenen Plan aus.",
-        "invalid_profiles": "Unter 'profiles' müssen mindestens zwei Profile vorhanden sein.",
-        "invalid_toggle": "app.toggle_profiles muss genau zwei Profil-IDs enthalten.",
-        "invalid_profile_ref": "Das Umschaltprofil '{profile}' existiert nicht.",
+        "invalid_profiles": "Unter 'profiles' muss mindestens ein Profil vorhanden sein.",
+        "invalid_toggle": "Mindestens ein Profil muss für den Hotkey aktiviert sein.",
+        "invalid_profile_ref": "Das Profil '{profile}' existiert nicht.",
         "invalid_hotkey": "Nicht unterstützte Hotkey-Taste: {key}",
+        "invalid_cpu_range": "{profile}: CPU Minimum darf nicht über CPU Maximum liegen ({source}).",
+        "invalid_parking_range": "{profile}: Core-Parking-Minimum darf nicht über dem Maximum liegen ({source}).",
         "invalid_int": "'{label}' muss eine ganze Zahl oder leer sein.",
         "invalid_range": "'{label}' muss {range} sein.",
         "not_empty": "'{label}' darf nicht leer sein.",
@@ -214,7 +271,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "shift": "Shift",
         "win": "Win",
         "startup_popup": "Show a short status popup at startup",
-        "apply_on_start": "Reapply the settings of the currently active toggle profile at startup",
+        "apply_on_start": "Reapply the settings of the currently active profile at startup",
         "popup": "Popup",
         "visible_ms": "Visible (ms)",
         "fade_ms": "Fade duration (ms)",
@@ -224,7 +281,18 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "save": "Save",
         "save_apply": "Save and apply selected profile",
         "profile_name": "Profile name",
+        "profile_enabled": "Include in hotkey switching",
+        "add_profile": "Add new profile",
+        "remove_profile": "Remove profile",
+        "new_profile": "New profile {number}",
+        "confirm_remove_profile_title": "Remove profile",
+        "confirm_remove_profile": "Really remove the profile '{name}'?",
+        "cannot_remove_last_profile": "At least one profile must remain.",
+        "at_least_one_enabled": "At least one profile must be enabled for hotkey switching.",
+        "disabled_profile_note": "Disabled profiles are skipped by the hotkey but remain editable.",
+        "profile_disabled_suffix": "off",
         "windows_plan": "Windows power plan",
+        "missing_plan_selection": "Missing plan | {guid}",
         "mains": "AC power",
         "battery": "Battery",
         "cpu_min": "CPU minimum (%)",
@@ -234,6 +302,41 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "hibernate_timeout": "Hibernate after (min.)",
         "boost_mode": "CPU boost mode",
         "cooling_policy": "System cooling policy",
+        "advanced_cpu": "Processor performance",
+        "core_parking": "Core Parking",
+        "core_parking_mode": "Core parking mode",
+        "parking_unchanged": "Do not change",
+        "parking_custom": "Custom",
+        "parking_disabled": "Disable Core Parking (all cores active)",
+        "parking_min": "Minimum active cores (%)",
+        "parking_max": "Maximum active cores (%)",
+        "core_parking_note": "A 100% minimum keeps all cores active. A maximum below 100% can reduce performance.",
+        "energy_preference": "Energy/performance preference (EPP)",
+        "energy_preference_enable": "Set energy preference for this power source",
+        "energy_preference_value": "EPP value (0 = performance, 100 = power saving)",
+        "energy_preference_note": "0 favors performance and 100 favors power saving. The CPU maximum limit takes priority.",
+        "timeouts": "Display and power timers",
+        "interaction_summary": "Warnings",
+        "interaction_ok": "No conflicts detected.",
+        "interaction_cpu_range": "CPU minimum is higher than CPU maximum.",
+        "interaction_boost_cap": "A CPU maximum below 100% can restrict Turbo Boost or make it ineffective.",
+        "interaction_epp_boost": "Aggressive boost and a high EPP value pursue different goals; Windows will balance performance and efficiency.",
+        "interaction_parking_limit": "A Core Parking maximum below 100% limits how many logical processors can be used at the same time.",
+        "interaction_parking_disabled": "Core Parking is disabled.",
+        "interaction_parking_range": "The minimum active-core percentage must not exceed the maximum.",
+        "cpu_compatibility": "CPU detection",
+        "detected_cpu": "Detected CPU: {name}",
+        "cpu_details": "Vendor: {vendor} | Logical processors: {logical} | Architecture: {architecture}",
+        "cpu_features": "Power-profile features detected by Windows: {features}",
+        "cpu_features_unknown": "Available CPU power-profile features could not be detected completely. Standard values will still be applied conservatively.",
+        "auto_class1": "Automatically apply additional hybrid CPU settings",
+        "auto_class1_note": "Only used when Windows supports these settings. It has no effect on standard Intel or AMD CPUs.",
+        "feature_cpu_range": "CPU performance range",
+        "feature_boost": "Boost",
+        "feature_cooling": "Cooling policy",
+        "feature_parking": "Core Parking",
+        "feature_epp": "Energy preference",
+        "feature_class1": "Efficiency class 1 / hybrid",
         "boost_0": "0 - Disabled",
         "boost_1": "1 - Enabled",
         "boost_2": "2 - Aggressive",
@@ -242,8 +345,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "cool_none": "Blank - Do not change",
         "cool_0": "0 - Passive",
         "cool_1": "1 - Active",
-        "time_note": "For time values, 0 means Never. A blank field leaves the existing Windows setting unchanged. Values are applied when switching to the profile.",
-        "boost_note": "Boost 0 disables turbo boost. Boost 2 is aggressive and intended for the performance profile. For display, sleep and hibernate: 0 = Never, blank = unchanged.",
+        "time_note": "Time values: 0 = Never, blank = keep the existing Windows setting.",
+        "boost_note": "Boost 0 = off. Boost 2 = aggressive. CPU maximum and EPP can limit boost further.",
         "installed_plans": "Installed power plans",
         "status": "Status",
         "name": "Name",
@@ -256,11 +359,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "remove_selected": "Disable / remove selected plan",
         "restore_standard": "Install / restore missing standard plan",
         "standard_plan": "Windows standard plan",
-        "plan_manager_note": "Disabling removes a power plan from Windows. The active plan and plans assigned to a toggle profile are protected. Deleted custom plans cannot be restored automatically.",
+        "plan_manager_note": "Removing deletes the power plan from Windows. Active plans and plans assigned to a profile are protected.",
         "select_installed": "Select an installed power plan first.",
         "select_standard": "Select a Windows standard plan first.",
         "cannot_remove_active": "The currently active power plan cannot be removed. Activate another plan first.",
-        "cannot_remove_profile": "This power plan is assigned to a toggle profile. Assign another plan to the profile and save the configuration first.",
+        "cannot_remove_profile": "This power plan is assigned to a profile. Assign another plan and save first.",
         "confirm_remove_title": "Remove power plan",
         "confirm_remove": "Really remove the power plan '{name}' from Windows?\n\nCustom settings stored in this plan will be lost.",
         "plan_removed": "Power plan removed: {name}",
@@ -288,10 +391,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "hotkey_unknown": "Unknown key: {key}",
         "hotkey_failed": "{hotkey} could not be registered (Windows error {code}). Open the configuration and choose another combination.",
         "profile_plan_missing": "The Windows power plan for '{name}' was not found. Open Power plans and install a missing standard plan or select an installed plan.",
-        "invalid_profiles": "At least two profiles are required under 'profiles'.",
-        "invalid_toggle": "app.toggle_profiles must contain exactly two profile IDs.",
-        "invalid_profile_ref": "The toggle profile '{profile}' does not exist.",
+        "invalid_profiles": "At least one profile is required under 'profiles'.",
+        "invalid_toggle": "At least one profile must be enabled for the hotkey.",
+        "invalid_profile_ref": "Profile '{profile}' does not exist.",
         "invalid_hotkey": "Unsupported hotkey: {key}",
+        "invalid_cpu_range": "{profile}: CPU minimum must not exceed CPU maximum ({source}).",
+        "invalid_parking_range": "{profile}: Core Parking minimum must not exceed the maximum ({source}).",
         "invalid_int": "'{label}' must be an integer or blank.",
         "invalid_range": "'{label}' must be {range}.",
         "not_empty": "'{label}' must not be blank.",
@@ -305,7 +410,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 2,
+    "schema_version": 4,
     "app": {
         "language": "de",
         "autostart": False,
@@ -316,9 +421,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "shift": False,
             "win": False,
         },
-        "toggle_profiles": ["summer", "performance"],
+        "profile_order": ["summer", "performance"],
         "show_startup_popup": True,
         "apply_active_profile_on_start": False,
+        "cpu_compatibility": {
+            "auto_apply_efficiency_class_1": True,
+        },
         "popup": {
             "hold_ms": 900,
             "fade_ms": 900,
@@ -330,6 +438,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "profiles": {
         "summer": {
             "display_name": "Sommer / Browsen",
+            "enabled": True,
             "plan": {
                 "guid": BALANCED_GUID,
                 "name_contains": ["Ausbalanciert", "Balanced"],
@@ -338,6 +447,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "processor_min_ac_percent": 5,
                 "processor_max_ac_percent": 50,
                 "processor_boost_mode_ac": 0,
+                "core_parking_min_ac_percent": 10,
+                "core_parking_max_ac_percent": 100,
+                "energy_preference_ac_percent": 80,
                 "cooling_policy_ac": 1,
                 "display_timeout_ac_minutes": 0,
                 "sleep_timeout_ac_minutes": 0,
@@ -345,6 +457,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "processor_min_dc_percent": 5,
                 "processor_max_dc_percent": 50,
                 "processor_boost_mode_dc": 0,
+                "core_parking_min_dc_percent": 5,
+                "core_parking_max_dc_percent": 100,
+                "energy_preference_dc_percent": 90,
                 "cooling_policy_dc": 1,
                 "display_timeout_dc_minutes": 0,
                 "sleep_timeout_dc_minutes": 0,
@@ -353,6 +468,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
         "performance": {
             "display_name": "Leistung",
+            "enabled": True,
             "plan": {
                 "guid": ULTIMATE_GUID,
                 "name_contains": ["Ultimative Leistung", "Ultimate Performance"],
@@ -361,6 +477,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "processor_min_ac_percent": 5,
                 "processor_max_ac_percent": 100,
                 "processor_boost_mode_ac": 2,
+                "core_parking_min_ac_percent": 100,
+                "core_parking_max_ac_percent": 100,
+                "energy_preference_ac_percent": 0,
                 "cooling_policy_ac": 1,
                 "display_timeout_ac_minutes": 0,
                 "sleep_timeout_ac_minutes": 0,
@@ -368,6 +487,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "processor_min_dc_percent": 5,
                 "processor_max_dc_percent": 100,
                 "processor_boost_mode_dc": 2,
+                "core_parking_min_dc_percent": 100,
+                "core_parking_max_dc_percent": 100,
+                "energy_preference_dc_percent": 0,
                 "cooling_policy_dc": 1,
                 "display_timeout_dc_minutes": 0,
                 "sleep_timeout_dc_minutes": 0,
@@ -377,22 +499,38 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 
-SETTING_DEFINITIONS: dict[str, tuple[str, str, str, Callable[[Any], int]]] = {
-    "processor_min_ac_percent": ("ac", "SUB_PROCESSOR", "PROCTHROTTLEMIN", int),
-    "processor_max_ac_percent": ("ac", "SUB_PROCESSOR", "PROCTHROTTLEMAX", int),
-    "processor_boost_mode_ac": ("ac", "SUB_PROCESSOR", "PERFBOOSTMODE", int),
-    "cooling_policy_ac": ("ac", "SUB_PROCESSOR", "SYSCOOLPOL", int),
-    "display_timeout_ac_minutes": ("ac", "SUB_VIDEO", "VIDEOIDLE", lambda value: int(value) * 60),
-    "sleep_timeout_ac_minutes": ("ac", "SUB_SLEEP", "STANDBYIDLE", lambda value: int(value) * 60),
-    "hibernate_timeout_ac_minutes": ("ac", "SUB_SLEEP", "HIBERNATEIDLE", lambda value: int(value) * 60),
-    "processor_min_dc_percent": ("dc", "SUB_PROCESSOR", "PROCTHROTTLEMIN", int),
-    "processor_max_dc_percent": ("dc", "SUB_PROCESSOR", "PROCTHROTTLEMAX", int),
-    "processor_boost_mode_dc": ("dc", "SUB_PROCESSOR", "PERFBOOSTMODE", int),
-    "cooling_policy_dc": ("dc", "SUB_PROCESSOR", "SYSCOOLPOL", int),
-    "display_timeout_dc_minutes": ("dc", "SUB_VIDEO", "VIDEOIDLE", lambda value: int(value) * 60),
-    "sleep_timeout_dc_minutes": ("dc", "SUB_SLEEP", "STANDBYIDLE", lambda value: int(value) * 60),
-    "hibernate_timeout_dc_minutes": ("dc", "SUB_SLEEP", "HIBERNATEIDLE", lambda value: int(value) * 60),
+SETTING_DEFINITIONS: dict[
+    str, tuple[str, str, tuple[str, ...], Callable[[Any], int]]
+] = {
+    # Aliases ending in "1" target efficiency class 1 on heterogeneous CPUs.
+    # They are optional and are silently skipped on systems without that class.
+    "processor_min_ac_percent": ("ac", "SUB_PROCESSOR", ("PROCTHROTTLEMIN", "PROCTHROTTLEMIN1"), int),
+    "processor_max_ac_percent": ("ac", "SUB_PROCESSOR", ("PROCTHROTTLEMAX", "PROCTHROTTLEMAX1"), int),
+    "processor_boost_mode_ac": ("ac", "SUB_PROCESSOR", ("PERFBOOSTMODE",), int),
+    "core_parking_min_ac_percent": ("ac", "SUB_PROCESSOR", ("CPMINCORES", "CPMINCORES1"), int),
+    "core_parking_max_ac_percent": ("ac", "SUB_PROCESSOR", ("CPMAXCORES", "CPMAXCORES1"), int),
+    "energy_preference_ac_percent": ("ac", "SUB_PROCESSOR", ("PERFEPP", "PERFEPP1"), int),
+    "cooling_policy_ac": ("ac", "SUB_PROCESSOR", ("SYSCOOLPOL",), int),
+    "display_timeout_ac_minutes": ("ac", "SUB_VIDEO", ("VIDEOIDLE",), lambda value: int(value) * 60),
+    "sleep_timeout_ac_minutes": ("ac", "SUB_SLEEP", ("STANDBYIDLE",), lambda value: int(value) * 60),
+    "hibernate_timeout_ac_minutes": ("ac", "SUB_SLEEP", ("HIBERNATEIDLE",), lambda value: int(value) * 60),
+    "processor_min_dc_percent": ("dc", "SUB_PROCESSOR", ("PROCTHROTTLEMIN", "PROCTHROTTLEMIN1"), int),
+    "processor_max_dc_percent": ("dc", "SUB_PROCESSOR", ("PROCTHROTTLEMAX", "PROCTHROTTLEMAX1"), int),
+    "processor_boost_mode_dc": ("dc", "SUB_PROCESSOR", ("PERFBOOSTMODE",), int),
+    "core_parking_min_dc_percent": ("dc", "SUB_PROCESSOR", ("CPMINCORES", "CPMINCORES1"), int),
+    "core_parking_max_dc_percent": ("dc", "SUB_PROCESSOR", ("CPMAXCORES", "CPMAXCORES1"), int),
+    "energy_preference_dc_percent": ("dc", "SUB_PROCESSOR", ("PERFEPP", "PERFEPP1"), int),
+    "cooling_policy_dc": ("dc", "SUB_PROCESSOR", ("SYSCOOLPOL",), int),
+    "display_timeout_dc_minutes": ("dc", "SUB_VIDEO", ("VIDEOIDLE",), lambda value: int(value) * 60),
+    "sleep_timeout_dc_minutes": ("dc", "SUB_SLEEP", ("STANDBYIDLE",), lambda value: int(value) * 60),
+    "hibernate_timeout_dc_minutes": ("dc", "SUB_SLEEP", ("HIBERNATEIDLE",), lambda value: int(value) * 60),
 }
+
+ADVANCED_CPU_SETTING_KEYS = (
+    "core_parking_min_{source}_percent",
+    "core_parking_max_{source}_percent",
+    "energy_preference_{source}_percent",
+)
 
 
 def application_directory() -> Path:
@@ -444,11 +582,82 @@ def deep_merge(default: Any, custom: Any) -> Any:
     return deep_copy_json(custom)
 
 
+def ordered_profile_ids(config: dict[str, Any], enabled_only: bool = False) -> list[str]:
+    profiles = config.get("profiles", {})
+    if not isinstance(profiles, dict):
+        return []
+    configured_order = config.get("app", {}).get("profile_order", [])
+    order: list[str] = []
+    if isinstance(configured_order, list):
+        for profile_id in configured_order:
+            profile_id = str(profile_id)
+            if profile_id in profiles and profile_id not in order:
+                order.append(profile_id)
+    for profile_id in profiles:
+        if profile_id not in order:
+            order.append(profile_id)
+    if enabled_only:
+        order = [profile_id for profile_id in order if bool(profiles[profile_id].get("enabled", True))]
+    return order
+
+
 def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
 
+
+def migrate_config(raw: dict[str, Any]) -> dict[str, Any]:
+    """Migrate older configs without silently enabling newly added CPU tweaks."""
+    migrated = deep_copy_json(raw)
+    try:
+        schema_version = int(migrated.get("schema_version", 1))
+    except (TypeError, ValueError):
+        schema_version = 1
+
+    app_config = migrated.setdefault("app", {})
+    app_config.setdefault("cpu_compatibility", {})
+    app_config["cpu_compatibility"].setdefault("auto_apply_efficiency_class_1", True)
+
+    profiles = migrated.setdefault("profiles", {})
+    old_toggle = app_config.get("toggle_profiles", [])
+    if not isinstance(old_toggle, list):
+        old_toggle = []
+
+    if schema_version < 3:
+        for profile in profiles.values():
+            if not isinstance(profile, dict):
+                continue
+            settings = profile.setdefault("settings", {})
+            if not isinstance(settings, dict):
+                continue
+            for source in ("ac", "dc"):
+                for template in ADVANCED_CPU_SETTING_KEYS:
+                    settings.setdefault(template.format(source=source), None)
+
+    if schema_version < 4:
+        order: list[str] = []
+        for profile_id in old_toggle:
+            profile_id = str(profile_id)
+            if profile_id in profiles and profile_id not in order:
+                order.append(profile_id)
+        for profile_id in profiles:
+            if profile_id not in order:
+                order.append(profile_id)
+        app_config["profile_order"] = order
+        for profile_id, profile in profiles.items():
+            if isinstance(profile, dict):
+                profile.setdefault("enabled", profile_id in old_toggle if old_toggle else True)
+        app_config.pop("toggle_profiles", None)
+
+    for profile in profiles.values():
+        if isinstance(profile, dict):
+            profile.setdefault("enabled", True)
+
+    app_config["profile_order"] = ordered_profile_ids(migrated)
+    app_config.pop("toggle_profiles", None)
+    migrated["schema_version"] = 4
+    return migrated
 
 def load_or_create_config() -> dict[str, Any]:
     if not CONFIG_PATH.exists():
@@ -456,8 +665,13 @@ def load_or_create_config() -> dict[str, Any]:
         return deep_copy_json(DEFAULT_CONFIG)
     try:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-        merged = deep_merge(DEFAULT_CONFIG, raw)
-        merged["schema_version"] = 2
+        migrated = migrate_config(raw)
+        merged = deep_merge(DEFAULT_CONFIG, migrated)
+        if isinstance(migrated.get("profiles"), dict):
+            merged["profiles"] = deep_copy_json(migrated["profiles"])
+        merged.setdefault("app", {})["profile_order"] = ordered_profile_ids(migrated)
+        merged["app"].pop("toggle_profiles", None)
+        merged["schema_version"] = 4
         validate_config(merged)
         return merged
     except Exception as exc:
@@ -478,24 +692,33 @@ def load_or_create_config() -> dict[str, Any]:
 
 def validate_config(config: dict[str, Any]) -> None:
     profiles = config.get("profiles")
-    if not isinstance(profiles, dict) or len(profiles) < 2:
+    if not isinstance(profiles, dict) or len(profiles) < 1:
         raise ValueError(translate(config, "invalid_profiles"))
-    toggle_profiles = config.get("app", {}).get("toggle_profiles")
-    if not isinstance(toggle_profiles, list) or len(toggle_profiles) != 2:
-        raise ValueError(translate(config, "invalid_toggle"))
-    for profile_id in toggle_profiles:
-        if profile_id not in profiles:
+
+    profile_order = config.get("app", {}).get("profile_order")
+    if not isinstance(profile_order, list):
+        raise ValueError("app.profile_order must be a list.")
+    for profile_id in profile_order:
+        if str(profile_id) not in profiles:
             raise ValueError(translate(config, "invalid_profile_ref", profile=profile_id))
+    if not ordered_profile_ids(config, enabled_only=True):
+        raise ValueError(translate(config, "at_least_one_enabled"))
+
     language = str(config.get("app", {}).get("language", "de")).lower()
     if language not in TRANSLATIONS:
         raise ValueError("app.language must be 'de' or 'en'.")
+    compatibility = config.get("app", {}).get("cpu_compatibility", {})
+    if not isinstance(compatibility, dict):
+        raise ValueError("app.cpu_compatibility must be an object.")
     hotkey = config.get("app", {}).get("hotkey", {})
     key = str(hotkey.get("key", "")).upper()
     if key not in VK_CODES:
         raise ValueError(translate(config, "invalid_hotkey", key=key))
+
     for profile_id, profile in profiles.items():
         if not isinstance(profile, dict):
             raise ValueError(f"Invalid profile: {profile_id}")
+        profile["enabled"] = bool(profile.get("enabled", True))
         for setting_name, value in profile.get("settings", {}).items():
             if setting_name not in SETTING_DEFINITIONS or value is None or value == "":
                 continue
@@ -509,6 +732,17 @@ def validate_config(config: dict[str, Any]) -> None:
             if "cooling_policy" in setting_name and numeric not in (0, 1):
                 raise ValueError(f"{profile_id}.{setting_name}: expected 0, 1 or null")
 
+        settings = profile.get("settings", {})
+        for source in ("ac", "dc"):
+            cpu_min = settings.get(f"processor_min_{source}_percent")
+            cpu_max = settings.get(f"processor_max_{source}_percent")
+            if cpu_min is not None and cpu_max is not None and int(cpu_min) > int(cpu_max):
+                raise ValueError(translate(config, "invalid_cpu_range", profile=profile.get("display_name", profile_id), source=source.upper()))
+
+            parking_min = settings.get(f"core_parking_min_{source}_percent")
+            parking_max = settings.get(f"core_parking_max_{source}_percent")
+            if parking_min is not None and parking_max is not None and int(parking_min) > int(parking_max):
+                raise ValueError(translate(config, "invalid_parking_range", profile=profile.get("display_name", profile_id), source=source.upper()))
 
 def autostart_command() -> str:
     if getattr(sys, "frozen", False):
@@ -564,7 +798,7 @@ def decode_windows_console_output(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def run_powercfg(arguments: list[str]) -> str:
+def run_powercfg_result(arguments: list[str]) -> tuple[int, str]:
     completed = subprocess.run(
         [POWERCFG, *arguments],
         capture_output=True,
@@ -573,12 +807,108 @@ def run_powercfg(arguments: list[str]) -> str:
         check=False,
     )
     output = (decode_windows_console_output(completed.stdout) + decode_windows_console_output(completed.stderr)).strip()
-    if completed.returncode != 0:
+    return completed.returncode, output
+
+
+def run_powercfg(arguments: list[str]) -> str:
+    return_code, output = run_powercfg_result(arguments)
+    if return_code != 0:
         raise RuntimeError(
-            f"powercfg {' '.join(arguments)} failed (code {completed.returncode}).\n"
+            f"powercfg {' '.join(arguments)} failed (code {return_code}).\n"
             f"{output or 'No error text returned.'}"
         )
     return output
+
+
+def detect_cpu_info() -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "name": os.environ.get("PROCESSOR_IDENTIFIER", "Unknown CPU"),
+        "vendor": "Unknown",
+        "architecture": os.environ.get("PROCESSOR_ARCHITECTURE", "Unknown"),
+        "logical_processors": os.cpu_count() or 0,
+    }
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            0,
+            winreg.KEY_READ,
+        ) as key:
+            for registry_name, target_name in (
+                ("ProcessorNameString", "name"),
+                ("VendorIdentifier", "vendor"),
+                ("Identifier", "identifier"),
+            ):
+                try:
+                    value, _ = winreg.QueryValueEx(key, registry_name)
+                    if value:
+                        info[target_name] = str(value).strip()
+                except OSError:
+                    pass
+    except OSError:
+        LOGGER.exception("Could not read CPU information from registry")
+
+    vendor_text = f"{info.get('vendor', '')} {info.get('name', '')}".casefold()
+    if "genuineintel" in vendor_text or "intel" in vendor_text:
+        info["vendor_family"] = "Intel"
+    elif "authenticamd" in vendor_text or "amd" in vendor_text:
+        info["vendor_family"] = "AMD"
+    elif "arm" in vendor_text or "qualcomm" in vendor_text:
+        info["vendor_family"] = "ARM"
+    else:
+        info["vendor_family"] = str(info.get("vendor") or "Unknown")
+    return info
+
+
+_PROCESSOR_CAPABILITY_CACHE: dict[str, tuple[bool, set[str]]] = {}
+
+
+def query_supported_processor_aliases(plan_guid: str, refresh: bool = False) -> tuple[bool, set[str]]:
+    normalized = plan_guid.lower()
+    if not refresh and normalized in _PROCESSOR_CAPABILITY_CACHE:
+        query_ok, aliases = _PROCESSOR_CAPABILITY_CACHE[normalized]
+        return query_ok, set(aliases)
+
+    output = ""
+    authoritative_query = False
+
+    # /qh includes hidden processor settings such as Core Parking and EPP.
+    # If a Windows build does not support /qh, /query is used for display only;
+    # it is not treated as an authoritative absence test for hidden settings.
+    return_code, candidate = run_powercfg_result(["/qh", normalized, "SUB_PROCESSOR"])
+    if return_code == 0 and candidate:
+        output = candidate
+        authoritative_query = True
+    else:
+        return_code, candidate = run_powercfg_result(["/query", normalized, "SUB_PROCESSOR"])
+        if return_code == 0 and candidate:
+            output = candidate
+
+    upper_output = output.upper()
+    aliases = {
+        alias
+        for alias in KNOWN_PROCESSOR_ALIASES
+        if re.search(rf"(?<![A-Z0-9_]){re.escape(alias)}(?![A-Z0-9_])", upper_output)
+    }
+    # An output without recognizable aliases cannot safely be used to decide
+    # that a setting is unsupported, for example on unusual localized builds.
+    query_ok = authoritative_query and bool(aliases)
+    _PROCESSOR_CAPABILITY_CACHE[normalized] = (query_ok, aliases)
+    return query_ok, set(aliases)
+
+
+def processor_capability_summary(plan_guid: str) -> dict[str, Any]:
+    query_ok, aliases = query_supported_processor_aliases(plan_guid)
+    return {
+        "query_ok": query_ok,
+        "aliases": sorted(aliases),
+        "cpu_range": bool({"PROCTHROTTLEMIN", "PROCTHROTTLEMAX"} & aliases),
+        "class1": bool({"PROCTHROTTLEMIN1", "PROCTHROTTLEMAX1", "CPMINCORES1", "CPMAXCORES1", "PERFEPP1"} & aliases),
+        "parking": bool({"CPMINCORES", "CPMAXCORES"} & aliases),
+        "epp": "PERFEPP" in aliases,
+        "boost": "PERFBOOSTMODE" in aliases,
+        "cooling": "SYSCOOLPOL" in aliases,
+    }
 
 
 def extract_guids(text: str) -> list[str]:
@@ -687,21 +1017,45 @@ def resolve_plan_guid(profile: dict[str, Any], plans: list[dict[str, Any]], conf
     )
 
 
-def apply_profile_settings(plan_guid: str, settings: dict[str, Any]) -> list[str]:
+def apply_profile_settings(
+    plan_guid: str,
+    settings: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> list[str]:
     warnings: list[str] = []
+    query_ok, supported_aliases = query_supported_processor_aliases(plan_guid, refresh=True)
+    auto_class1 = bool(
+        (config or {}).get("app", {}).get("cpu_compatibility", {}).get(
+            "auto_apply_efficiency_class_1", True
+        )
+    )
+
     for setting_name, definition in SETTING_DEFINITIONS.items():
         if setting_name not in settings:
             continue
         raw_value = settings.get(setting_name)
         if raw_value is None or raw_value == "":
             continue
-        power_source, subgroup, setting, converter = definition
+        power_source, subgroup, setting_aliases, converter = definition
         command = "/setacvalueindex" if power_source == "ac" else "/setdcvalueindex"
-        try:
-            run_powercfg([command, plan_guid, subgroup, setting, str(converter(raw_value))])
-        except RuntimeError as exc:
-            warnings.append(f"{setting_name}: {exc}")
-            LOGGER.warning("Could not apply %s: %s", setting_name, exc)
+        converted_value = str(converter(raw_value))
+
+        for setting_alias in setting_aliases:
+            is_class1 = setting_alias.endswith("1")
+            if is_class1 and not auto_class1:
+                LOGGER.info("Skipping class-1 setting %s because automatic class-1 support is disabled", setting_alias)
+                continue
+            if subgroup == "SUB_PROCESSOR" and query_ok and setting_alias not in supported_aliases:
+                LOGGER.info("Skipping unsupported processor setting %s on plan %s", setting_alias, plan_guid)
+                continue
+            try:
+                run_powercfg([command, plan_guid, subgroup, setting_alias, converted_value])
+            except RuntimeError as exc:
+                if is_class1:
+                    LOGGER.info("Optional class-1 setting %s is unavailable: %s", setting_alias, exc)
+                    continue
+                warnings.append(f"{setting_name}/{setting_alias}: {exc}")
+                LOGGER.warning("Could not apply %s using %s: %s", setting_name, setting_alias, exc)
     return warnings
 
 
@@ -808,10 +1162,18 @@ class ConfigEditor:
 
     def __init__(self, app: "PowerPlanSwitcherApp") -> None:
         self.app = app
+        self.working_profiles: dict[str, dict[str, Any]] = deep_copy_json(app.config.get("profiles", {}))
+        self.profile_order: list[str] = ordered_profile_ids(app.config)
+        self.profile_tabs: dict[str, ttk.Frame] = {}
+        self.profile_tab_ids: dict[str, str] = {}
+        self.plus_tab: ttk.Frame | None = None
+        self.plans_tab: ttk.Frame | None = None
+        self.last_selected_profile_id: str | None = self.profile_order[0] if self.profile_order else None
+        self._adding_profile = False
         self.window = tk.Toplevel(app.root)
         self.window.title(f"{APP_NAME} - {self.t('app_config')}")
-        self.window.geometry("940x780")
-        self.window.minsize(850, 680)
+        self.window.geometry("1020x860")
+        self.window.minsize(900, 740)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.variables: dict[str, tk.Variable] = {}
         self.profile_variables: dict[str, dict[str, tk.Variable]] = {}
@@ -879,22 +1241,119 @@ class ConfigEditor:
         notebook.add(general_tab, text=self.t("general"))
         self._build_general_tab(general_tab)
 
-        for profile_id in self.app.config["app"]["toggle_profiles"]:
-            profile = self.app.config["profiles"][profile_id]
-            tab = ttk.Frame(notebook, padding=14)
-            notebook.add(tab, text=profile.get("display_name", profile_id))
-            self._build_profile_tab(tab, profile_id, profile)
+        for profile_id in self.profile_order:
+            self._insert_profile_tab(profile_id)
 
-        plans_tab = ttk.Frame(notebook, padding=14)
-        notebook.add(plans_tab, text=self.t("power_plans"))
-        self._build_plan_manager_tab(plans_tab)
+        self.plus_tab = ttk.Frame(notebook, padding=14)
+        notebook.add(self.plus_tab, text="+")
+        ttk.Label(self.plus_tab, text=self.t("add_profile"), font=("Segoe UI", 12, "bold")).pack(pady=30)
 
-        ttk.Label(outer, text=self.t("time_note"), wraplength=880, justify="left").pack(fill="x", pady=(10, 6))
+        self.plans_tab = ttk.Frame(notebook, padding=14)
+        notebook.add(self.plans_tab, text=self.t("power_plans"))
+        self._build_plan_manager_tab(self.plans_tab)
+
+        notebook.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
+
+        ttk.Label(outer, text=self.t("disabled_profile_note"), wraplength=880, justify="left").pack(fill="x", pady=(10, 2))
+        ttk.Label(outer, text=self.t("time_note"), wraplength=880, justify="left").pack(fill="x", pady=(2, 6))
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x")
         ttk.Button(buttons, text=self.t("cancel"), command=self.close).pack(side="right")
         ttk.Button(buttons, text=self.t("save"), command=self.save).pack(side="right", padx=8)
         ttk.Button(buttons, text=self.t("save_apply"), command=self.save_and_apply).pack(side="right")
+
+    def _profile_tab_title(self, profile_id: str) -> str:
+        profile = self.working_profiles.get(profile_id, {})
+        variables = self.profile_variables.get(profile_id, {})
+        name = str(variables.get("display_name").get()).strip() if variables.get("display_name") is not None else str(profile.get("display_name", profile_id))
+        enabled = bool(variables.get("enabled").get()) if variables.get("enabled") is not None else bool(profile.get("enabled", True))
+        if not enabled:
+            return f"{name} [{self.t('profile_disabled_suffix')}]"
+        return name
+
+    def _insert_profile_tab(self, profile_id: str) -> None:
+        if self.main_notebook is None or profile_id not in self.working_profiles:
+            return
+        tab = ttk.Frame(self.main_notebook, padding=14)
+        self.profile_tabs[profile_id] = tab
+        self.profile_tab_ids[str(tab)] = profile_id
+        if self.plus_tab is not None:
+            plus_index = self.main_notebook.index(self.plus_tab)
+            self.main_notebook.insert(plus_index, tab, text=self._profile_tab_title(profile_id))
+        else:
+            self.main_notebook.add(tab, text=self._profile_tab_title(profile_id))
+        self._build_profile_tab(tab, profile_id, self.working_profiles[profile_id])
+
+    def _selected_profile_id(self) -> str | None:
+        if self.main_notebook is None:
+            return None
+        selected = self.main_notebook.select()
+        return self.profile_tab_ids.get(str(selected))
+
+    def _on_main_tab_changed(self, _event: tk.Event[Any]) -> None:
+        if self.main_notebook is None:
+            return
+        selected = self.main_notebook.select()
+        profile_id = self.profile_tab_ids.get(str(selected))
+        if profile_id is not None:
+            self.last_selected_profile_id = profile_id
+            return
+        if self.plus_tab is not None and str(selected) == str(self.plus_tab) and not self._adding_profile:
+            self._adding_profile = True
+            self.window.after_idle(self.add_profile)
+
+    def add_profile(self) -> None:
+        try:
+            number = 1
+            while f"profile_{number}" in self.working_profiles:
+                number += 1
+            profile_id = f"profile_{number}"
+            template_id = self.last_selected_profile_id if self.last_selected_profile_id in self.working_profiles else (self.profile_order[0] if self.profile_order else None)
+            if template_id is not None:
+                profile = deep_copy_json(self.working_profiles[template_id])
+            else:
+                profile = deep_copy_json(DEFAULT_CONFIG["profiles"]["summer"])
+            profile["display_name"] = self.t("new_profile", number=number)
+            profile["enabled"] = True
+            self.working_profiles[profile_id] = profile
+            self.profile_order.append(profile_id)
+            self._insert_profile_tab(profile_id)
+            self.last_selected_profile_id = profile_id
+            if self.main_notebook is not None:
+                self.main_notebook.select(self.profile_tabs[profile_id])
+        finally:
+            self._adding_profile = False
+
+    def remove_profile(self, profile_id: str) -> None:
+        if profile_id not in self.working_profiles:
+            return
+        if len(self.working_profiles) <= 1:
+            messagebox.showwarning(APP_NAME, self.t("cannot_remove_last_profile"), parent=self.window)
+            return
+        name = self._profile_tab_title(profile_id)
+        if not messagebox.askyesno(
+            self.t("confirm_remove_profile_title"),
+            self.t("confirm_remove_profile", name=name),
+            parent=self.window,
+            icon="warning",
+        ):
+            return
+        tab = self.profile_tabs.pop(profile_id, None)
+        if tab is not None and self.main_notebook is not None:
+            self.profile_tab_ids.pop(str(tab), None)
+            self.main_notebook.forget(tab)
+            tab.destroy()
+        combo_list: list[ttk.Combobox] = []
+        for combo in self.plan_comboboxes:
+            if str(getattr(combo, "_profile_id", "")) != profile_id:
+                combo_list.append(combo)
+        self.plan_comboboxes = combo_list
+        self.profile_variables.pop(profile_id, None)
+        self.working_profiles.pop(profile_id, None)
+        self.profile_order = [item for item in self.profile_order if item != profile_id]
+        self.last_selected_profile_id = self.profile_order[0] if self.profile_order else None
+        if self.main_notebook is not None and self.last_selected_profile_id is not None:
+            self.main_notebook.select(self.profile_tabs[self.last_selected_profile_id])
 
     def _build_general_tab(self, parent: ttk.Frame) -> None:
         config = self.app.config["app"]
@@ -933,49 +1392,132 @@ class ConfigEditor:
         self.variables["apply_active_profile_on_start"] = apply_start
         ttk.Checkbutton(parent, text=self.t("apply_on_start"), variable=apply_start).grid(row=6, column=0, columnspan=4, sticky="w", pady=4)
 
+        ttk.Label(parent, text=self.t("cpu_compatibility"), font=("Segoe UI", 11, "bold")).grid(row=7, column=0, columnspan=4, sticky="w", pady=(20, 8))
+        cpu_info = self.app.cpu_info
+        ttk.Label(parent, text=self.t("detected_cpu", name=cpu_info.get("name", "Unknown")), wraplength=850, justify="left").grid(row=8, column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(
+            parent,
+            text=self.t(
+                "cpu_details",
+                vendor=cpu_info.get("vendor_family", cpu_info.get("vendor", "Unknown")),
+                logical=cpu_info.get("logical_processors", 0),
+                architecture=cpu_info.get("architecture", "Unknown"),
+            ),
+            wraplength=850,
+            justify="left",
+        ).grid(row=9, column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(parent, text=self.app.cpu_capability_text(), wraplength=850, justify="left").grid(row=10, column=0, columnspan=4, sticky="w", pady=(2, 8))
+        compatibility = config.get("cpu_compatibility", {})
+        auto_class1 = tk.BooleanVar(value=bool(compatibility.get("auto_apply_efficiency_class_1", True)))
+        self.variables["cpu_compatibility.auto_apply_efficiency_class_1"] = auto_class1
+        ttk.Checkbutton(parent, text=self.t("auto_class1"), variable=auto_class1).grid(row=11, column=0, columnspan=4, sticky="w", pady=4)
+        ttk.Label(parent, text=self.t("auto_class1_note"), wraplength=850, justify="left").grid(row=12, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
         popup = config.get("popup", {})
-        ttk.Label(parent, text=self.t("popup"), font=("Segoe UI", 11, "bold")).grid(row=7, column=0, columnspan=4, sticky="w", pady=(20, 10))
+        ttk.Label(parent, text=self.t("popup"), font=("Segoe UI", 11, "bold")).grid(row=13, column=0, columnspan=4, sticky="w", pady=(20, 10))
         popup_fields = [
             (self.t("visible_ms"), "hold_ms", 900),
             (self.t("fade_ms"), "fade_ms", 900),
             (self.t("width"), "width", 390),
             (self.t("height"), "height", 78),
         ]
-        for row, (label, key, default) in enumerate(popup_fields, start=8):
+        for row, (label, key, default) in enumerate(popup_fields, start=14):
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
             variable = tk.StringVar(value=str(popup.get(key, default)))
             self.variables[f"popup.{key}"] = variable
             ttk.Entry(parent, textvariable=variable, width=16).grid(row=row, column=1, sticky="w")
         parent.columnconfigure(3, weight=1)
 
+    def _create_scrollable_source_tab(
+        self, notebook: ttk.Notebook, title: str
+    ) -> ttk.Frame:
+        container = ttk.Frame(notebook)
+        notebook.add(container, text=title)
+        container.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(container, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        content = ttk.Frame(canvas, padding=12)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def update_scroll_region(_event: tk.Event[Any]) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def fit_content_width(event: tk.Event[Any]) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        def scroll_with_wheel(event: tk.Event[Any]) -> None:
+            delta = -1 if event.delta > 0 else 1
+            canvas.yview_scroll(delta * 3, "units")
+
+        def bind_mousewheel(_event: tk.Event[Any]) -> None:
+            canvas.bind_all("<MouseWheel>", scroll_with_wheel)
+
+        def unbind_mousewheel(_event: tk.Event[Any]) -> None:
+            canvas.unbind_all("<MouseWheel>")
+
+        content.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", fit_content_width)
+        canvas.bind("<Enter>", bind_mousewheel)
+        canvas.bind("<Leave>", unbind_mousewheel)
+        content.bind("<Enter>", bind_mousewheel)
+        content.bind("<Leave>", unbind_mousewheel)
+        return content
+
+
     def _build_profile_tab(self, parent: ttk.Frame, profile_id: str, profile: dict[str, Any]) -> None:
         variables: dict[str, tk.Variable] = {}
         self.profile_variables[profile_id] = variables
-        ttk.Label(parent, text=self.t("profile_name")).grid(row=0, column=0, sticky="w", pady=4)
+
+        enabled_var = tk.BooleanVar(value=bool(profile.get("enabled", True)))
+        variables["enabled"] = enabled_var
+        ttk.Checkbutton(parent, text=self.t("profile_enabled"), variable=enabled_var).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Button(parent, text=self.t("remove_profile"), command=partial(self.remove_profile, profile_id)).grid(row=0, column=3, sticky="e", pady=(0, 8))
+
+        ttk.Label(parent, text=self.t("profile_name")).grid(row=1, column=0, sticky="w", pady=4)
         name_var = tk.StringVar(value=str(profile.get("display_name", profile_id)))
         variables["display_name"] = name_var
-        ttk.Entry(parent, textvariable=name_var, width=36).grid(row=0, column=1, columnspan=3, sticky="ew", pady=4)
+        ttk.Entry(parent, textvariable=name_var, width=36).grid(row=1, column=1, columnspan=3, sticky="ew", pady=4)
 
-        ttk.Label(parent, text=self.t("windows_plan")).grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Label(parent, text=self.t("windows_plan")).grid(row=2, column=0, sticky="w", pady=4)
         plan_var = tk.StringVar()
         variables["plan_selection"] = plan_var
         combo = ttk.Combobox(parent, textvariable=plan_var, width=70)
-        combo.grid(row=1, column=1, columnspan=3, sticky="ew", pady=4)
+        combo.grid(row=2, column=1, columnspan=3, sticky="ew", pady=4)
         self.plan_comboboxes.append(combo)
         combo._profile_id = profile_id  # type: ignore[attr-defined]
 
         settings = profile.get("settings", {})
         notebook = ttk.Notebook(parent)
-        notebook.grid(row=2, column=0, columnspan=4, sticky="nsew", pady=(14, 0))
+        notebook.grid(row=3, column=0, columnspan=4, sticky="nsew", pady=(14, 0))
         for source, title_key in (("ac", "mains"), ("dc", "battery")):
-            tab = ttk.Frame(notebook, padding=12)
-            notebook.add(tab, text=self.t(title_key))
+            tab = self._create_scrollable_source_tab(notebook, self.t(title_key))
             self._build_source_settings(tab, variables, settings, source)
-        parent.rowconfigure(2, weight=1)
+        parent.rowconfigure(3, weight=1)
         parent.columnconfigure(1, weight=1)
         parent.columnconfigure(2, weight=1)
         parent.columnconfigure(3, weight=1)
         self._refresh_profile_plan_combobox(combo, profile_id)
+
+        def update_profile_tab_title(*_args: Any) -> None:
+            if self.main_notebook is None:
+                return
+            tab = self.profile_tabs.get(profile_id)
+            if tab is None:
+                return
+            try:
+                self.main_notebook.tab(tab, text=self._profile_tab_title(profile_id))
+            except tk.TclError:
+                pass
+
+        name_var.trace_add("write", update_profile_tab_title)
+        enabled_var.trace_add("write", update_profile_tab_title)
+        update_profile_tab_title()
 
     def _boost_labels(self) -> dict[str, int]:
         return {self.t(f"boost_{value}"): value for value in BOOST_VALUES}
@@ -987,38 +1529,176 @@ class ConfigEditor:
             self.t("cool_1"): 1,
         }
 
-    def _build_source_settings(self, parent: ttk.Frame, variables: dict[str, tk.Variable], settings: dict[str, Any], source: str) -> None:
+    def _parking_labels(self) -> dict[str, str]:
+        return {
+            self.t("parking_unchanged"): "unchanged",
+            self.t("parking_custom"): "custom",
+            self.t("parking_disabled"): "disabled",
+        }
+
+    def _build_source_settings(
+        self,
+        parent: ttk.Frame,
+        variables: dict[str, tk.Variable],
+        settings: dict[str, Any],
+        source: str,
+    ) -> None:
+        parent.columnconfigure(0, weight=1)
+
+        performance_frame = ttk.LabelFrame(parent, text=self.t("advanced_cpu"), padding=10)
+        performance_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        performance_frame.columnconfigure(2, weight=1)
+
+        performance_rows = [
+            ("cpu_min", f"processor_min_{source}_percent"),
+            ("cpu_max", f"processor_max_{source}_percent"),
+        ]
         row = 0
-        for label_key, template in self.FIELD_ROWS:
-            key = template.format(source=source)
-            ttk.Label(parent, text=self.t(label_key)).grid(row=row, column=0, sticky="w", pady=5)
+        for label_key, key in performance_rows:
+            ttk.Label(performance_frame, text=self.t(label_key)).grid(row=row, column=0, sticky="w", pady=5)
             value = settings.get(key)
             variable = tk.StringVar(value="" if value is None else str(value))
             variables[key] = variable
-            ttk.Entry(parent, textvariable=variable, width=18).grid(row=row, column=1, sticky="w", padx=(12, 0), pady=5)
+            ttk.Spinbox(performance_frame, textvariable=variable, from_=0, to=100, width=12).grid(row=row, column=1, sticky="w", padx=(12, 0), pady=5)
             row += 1
 
         boost_labels = self._boost_labels()
         boost_key = f"processor_boost_mode_{source}"
-        ttk.Label(parent, text=self.t("boost_mode")).grid(row=row, column=0, sticky="w", pady=5)
+        ttk.Label(performance_frame, text=self.t("boost_mode")).grid(row=row, column=0, sticky="w", pady=5)
         boost_value = settings.get(boost_key, 0)
         boost_label = next((label for label, value in boost_labels.items() if value == boost_value), self.t("boost_0"))
         boost_var = tk.StringVar(value=boost_label)
         variables[boost_key] = boost_var
-        ttk.Combobox(parent, textvariable=boost_var, values=list(boost_labels.keys()), state="readonly", width=30).grid(row=row, column=1, sticky="w", padx=(12, 0), pady=5)
+        ttk.Combobox(performance_frame, textvariable=boost_var, values=list(boost_labels.keys()), state="readonly", width=32).grid(row=row, column=1, sticky="w", padx=(12, 0), pady=5)
         row += 1
 
         cooling_labels = self._cooling_labels()
         cooling_key = f"cooling_policy_{source}"
-        ttk.Label(parent, text=self.t("cooling_policy")).grid(row=row, column=0, sticky="w", pady=5)
+        ttk.Label(performance_frame, text=self.t("cooling_policy")).grid(row=row, column=0, sticky="w", pady=5)
         cooling_value = settings.get(cooling_key)
         cooling_label = next((label for label, value in cooling_labels.items() if value == cooling_value), self.t("cool_none"))
         cooling_var = tk.StringVar(value=cooling_label)
         variables[cooling_key] = cooling_var
-        ttk.Combobox(parent, textvariable=cooling_var, values=list(cooling_labels.keys()), state="readonly", width=30).grid(row=row, column=1, sticky="w", padx=(12, 0), pady=5)
+        ttk.Combobox(performance_frame, textvariable=cooling_var, values=list(cooling_labels.keys()), state="readonly", width=32).grid(row=row, column=1, sticky="w", padx=(12, 0), pady=5)
 
-        ttk.Label(parent, text=self.t("boost_note"), wraplength=700, justify="left").grid(row=row + 1, column=0, columnspan=3, sticky="w", pady=(18, 0))
-        parent.columnconfigure(2, weight=1)
+        parking_frame = ttk.LabelFrame(parent, text=self.t("core_parking"), padding=10)
+        parking_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        parking_frame.columnconfigure(2, weight=1)
+
+        parking_min_key = f"core_parking_min_{source}_percent"
+        parking_max_key = f"core_parking_max_{source}_percent"
+        parking_min_value = settings.get(parking_min_key)
+        parking_max_value = settings.get(parking_max_key)
+        parking_labels = self._parking_labels()
+        if parking_min_value is None and parking_max_value is None:
+            parking_mode_value = "unchanged"
+        elif int(parking_min_value or 0) == 100 and int(parking_max_value or 100) == 100:
+            parking_mode_value = "disabled"
+        else:
+            parking_mode_value = "custom"
+        parking_mode_label = next(label for label, value in parking_labels.items() if value == parking_mode_value)
+        parking_mode_var = tk.StringVar(value=parking_mode_label)
+        variables[f"core_parking_mode_{source}"] = parking_mode_var
+        ttk.Label(parking_frame, text=self.t("core_parking_mode")).grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Combobox(parking_frame, textvariable=parking_mode_var, values=list(parking_labels.keys()), state="readonly", width=42).grid(row=0, column=1, sticky="w", padx=(12, 0), pady=5)
+
+        parking_min_var = tk.StringVar(value="10" if parking_min_value is None else str(parking_min_value))
+        parking_max_var = tk.StringVar(value="100" if parking_max_value is None else str(parking_max_value))
+        variables[parking_min_key] = parking_min_var
+        variables[parking_max_key] = parking_max_var
+        ttk.Label(parking_frame, text=self.t("parking_min")).grid(row=1, column=0, sticky="w", pady=5)
+        parking_min_widget = ttk.Spinbox(parking_frame, textvariable=parking_min_var, from_=0, to=100, width=12)
+        parking_min_widget.grid(row=1, column=1, sticky="w", padx=(12, 0), pady=5)
+        ttk.Label(parking_frame, text=self.t("parking_max")).grid(row=2, column=0, sticky="w", pady=5)
+        parking_max_widget = ttk.Spinbox(parking_frame, textvariable=parking_max_var, from_=0, to=100, width=12)
+        parking_max_widget.grid(row=2, column=1, sticky="w", padx=(12, 0), pady=5)
+        ttk.Label(parking_frame, text=self.t("core_parking_note"), wraplength=780, justify="left").grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        epp_frame = ttk.LabelFrame(parent, text=self.t("energy_preference"), padding=10)
+        epp_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        epp_frame.columnconfigure(2, weight=1)
+        epp_key = f"energy_preference_{source}_percent"
+        epp_value = settings.get(epp_key)
+        epp_enabled_var = tk.BooleanVar(value=epp_value is not None)
+        epp_var = tk.StringVar(value="50" if epp_value is None else str(epp_value))
+        variables[f"energy_preference_enabled_{source}"] = epp_enabled_var
+        variables[epp_key] = epp_var
+        ttk.Checkbutton(epp_frame, text=self.t("energy_preference_enable"), variable=epp_enabled_var).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
+        ttk.Label(epp_frame, text=self.t("energy_preference_value")).grid(row=1, column=0, sticky="w", pady=5)
+        epp_widget = ttk.Spinbox(epp_frame, textvariable=epp_var, from_=0, to=100, width=12)
+        epp_widget.grid(row=1, column=1, sticky="w", padx=(12, 0), pady=5)
+        ttk.Label(epp_frame, text=self.t("energy_preference_note"), wraplength=780, justify="left").grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        time_frame = ttk.LabelFrame(parent, text=self.t("timeouts"), padding=10)
+        time_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        time_fields = [
+            ("display_timeout", f"display_timeout_{source}_minutes"),
+            ("sleep_timeout", f"sleep_timeout_{source}_minutes"),
+            ("hibernate_timeout", f"hibernate_timeout_{source}_minutes"),
+        ]
+        for time_row, (label_key, key) in enumerate(time_fields):
+            ttk.Label(time_frame, text=self.t(label_key)).grid(row=time_row, column=0, sticky="w", pady=5)
+            value = settings.get(key)
+            variable = tk.StringVar(value="" if value is None else str(value))
+            variables[key] = variable
+            ttk.Entry(time_frame, textvariable=variable, width=14).grid(row=time_row, column=1, sticky="w", padx=(12, 0), pady=5)
+
+        summary_frame = ttk.LabelFrame(parent, text=self.t("interaction_summary"), padding=10)
+        summary_frame.grid(row=4, column=0, sticky="ew")
+        summary_label = ttk.Label(summary_frame, text="", wraplength=800, justify="left")
+        summary_label.pack(fill="x")
+        summary_frame.grid_remove()
+
+        def safe_int(variable: tk.Variable, fallback: int) -> int:
+            try:
+                return int(str(variable.get()).strip())
+            except (TypeError, ValueError, tk.TclError):
+                return fallback
+
+        def update_summary(*_args: Any) -> None:
+            messages: list[str] = []
+            cpu_min = safe_int(variables[f"processor_min_{source}_percent"], 0)
+            cpu_max = safe_int(variables[f"processor_max_{source}_percent"], 100)
+            boost_mode = boost_labels.get(boost_var.get(), 0)
+            parking_mode = parking_labels.get(parking_mode_var.get(), "unchanged")
+            parking_min = safe_int(parking_min_var, 0)
+            parking_max = safe_int(parking_max_var, 100)
+            epp = safe_int(epp_var, 50)
+            if cpu_min > cpu_max:
+                messages.append(self.t("interaction_cpu_range"))
+            if cpu_max < 100 and boost_mode > 0:
+                messages.append(self.t("interaction_boost_cap"))
+            if epp_enabled_var.get() and epp >= 70 and boost_mode >= 2:
+                messages.append(self.t("interaction_epp_boost"))
+            if parking_mode == "custom":
+                if parking_min > parking_max:
+                    messages.append(self.t("interaction_parking_range"))
+                if parking_max < 100:
+                    messages.append(self.t("interaction_parking_limit"))
+            if messages:
+                summary_label.configure(text="\n".join(f"• {message}" for message in messages))
+                summary_frame.grid()
+            else:
+                summary_label.configure(text="")
+                summary_frame.grid_remove()
+
+        def update_parking_controls(*_args: Any) -> None:
+            mode = parking_labels.get(parking_mode_var.get(), "unchanged")
+            state = "normal" if mode == "custom" else "disabled"
+            parking_min_widget.configure(state=state)
+            parking_max_widget.configure(state=state)
+            update_summary()
+
+        def update_epp_controls(*_args: Any) -> None:
+            epp_widget.configure(state="normal" if epp_enabled_var.get() else "disabled")
+            update_summary()
+
+        for variable in (variables[f"processor_min_{source}_percent"], variables[f"processor_max_{source}_percent"], boost_var, parking_min_var, parking_max_var, epp_var):
+            variable.trace_add("write", update_summary)
+        parking_mode_var.trace_add("write", update_parking_controls)
+        epp_enabled_var.trace_add("write", update_epp_controls)
+        update_parking_controls()
+        update_epp_controls()
 
     def _build_plan_manager_tab(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text=self.t("installed_plans"), font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
@@ -1102,7 +1782,7 @@ class ConfigEditor:
 
     def _refresh_profile_plan_combobox(self, combo: ttk.Combobox, profile_id: str, plans: list[dict[str, Any]] | None = None) -> None:
         plans = plans if plans is not None else self.app.safe_list_power_plans(show_error=False)
-        profile = self.app.config["profiles"][profile_id]
+        profile = self.working_profiles[profile_id]
         configured_guid = str(profile.get("plan", {}).get("guid") or "").lower()
         values: list[str] = []
         selected = ""
@@ -1112,6 +1792,10 @@ class ConfigEditor:
             self.plan_values[display] = plan["guid"]
             if plan["guid"] == configured_guid:
                 selected = display
+        if configured_guid and not selected:
+            selected = self.t("missing_plan_selection", guid=configured_guid)
+            values.insert(0, selected)
+            self.plan_values[selected] = configured_guid
         combo.configure(values=values, state="readonly" if values else "normal")
         variable = self.profile_variables[profile_id]["plan_selection"]
         if selected:
@@ -1143,9 +1827,13 @@ class ConfigEditor:
 
     def _profile_uses_guid(self, guid: str) -> bool:
         plans = self.app.safe_list_power_plans(show_error=False)
-        for profile_id in self.app.config["app"]["toggle_profiles"]:
+        for profile_id in self.profile_order:
             try:
-                profile = self.app.config["profiles"][profile_id]
+                variables = self.profile_variables.get(profile_id, {})
+                selected = self.plan_values.get(str(variables.get("plan_selection").get())) if variables.get("plan_selection") is not None else None
+                if selected == guid:
+                    return True
+                profile = self.working_profiles[profile_id]
                 if resolve_plan_guid(profile, plans, self.app.config) == guid:
                     return True
             except Exception:
@@ -1209,11 +1897,16 @@ class ConfigEditor:
 
     def save(self, apply_selected: bool = False) -> None:
         try:
+            selected_profile_id = self._selected_profile_id()
             config = deep_copy_json(self.app.config)
+            config["schema_version"] = 4
+            config["profiles"] = deep_copy_json(self.working_profiles)
             language_map = self.variables["language_map"]  # type: ignore[assignment]
             language_display = str(self.variables["language"].get())
             config["app"]["language"] = language_map.get(language_display, "de")
             app_config = config["app"]
+            app_config["profile_order"] = list(self.profile_order)
+            app_config.pop("toggle_profiles", None)
             hotkey = app_config["hotkey"]
             hotkey["key"] = str(self.variables["hotkey.key"].get()).upper()
             for key in ("ctrl", "alt", "shift", "win"):
@@ -1221,6 +1914,10 @@ class ConfigEditor:
             app_config["show_startup_popup"] = bool(self.variables["show_startup_popup"].get())
             app_config["apply_active_profile_on_start"] = bool(self.variables["apply_active_profile_on_start"].get())
             app_config["autostart"] = bool(self.variables["autostart"].get())
+
+            app_config.setdefault("cpu_compatibility", {})["auto_apply_efficiency_class_1"] = bool(
+                self.variables["cpu_compatibility.auto_apply_efficiency_class_1"].get()
+            )
 
             for key in ("hold_ms", "fade_ms", "width", "height"):
                 parsed = self._optional_int(
@@ -1236,9 +1933,12 @@ class ConfigEditor:
 
             boost_labels = self._boost_labels()
             cooling_labels = self._cooling_labels()
-            for profile_id, variables in self.profile_variables.items():
+            parking_labels = self._parking_labels()
+            for profile_id in self.profile_order:
+                variables = self.profile_variables[profile_id]
                 profile = config["profiles"][profile_id]
                 profile["display_name"] = str(variables["display_name"].get()).strip() or profile_id
+                profile["enabled"] = bool(variables["enabled"].get())
                 selected_guid = self.plan_values.get(str(variables["plan_selection"].get()))
                 if selected_guid:
                     profile.setdefault("plan", {})["guid"] = selected_guid
@@ -1258,20 +1958,47 @@ class ConfigEditor:
                     cooling_key = f"cooling_policy_{source}"
                     settings[cooling_key] = cooling_labels[str(variables[cooling_key].get())]
 
+                    parking_mode_key = f"core_parking_mode_{source}"
+                    parking_mode = parking_labels[str(variables[parking_mode_key].get())]
+                    parking_min_key = f"core_parking_min_{source}_percent"
+                    parking_max_key = f"core_parking_max_{source}_percent"
+                    if parking_mode == "unchanged":
+                        settings[parking_min_key] = None
+                        settings[parking_max_key] = None
+                    elif parking_mode == "disabled":
+                        settings[parking_min_key] = 100
+                        settings[parking_max_key] = 100
+                    else:
+                        parking_min = self._optional_int(str(variables[parking_min_key].get()), parking_min_key, config, minimum=0, maximum=100)
+                        parking_max = self._optional_int(str(variables[parking_max_key].get()), parking_max_key, config, minimum=0, maximum=100)
+                        if parking_min is None or parking_max is None:
+                            raise ValueError(translate(config, "not_empty", label=self.t("core_parking")))
+                        if parking_min > parking_max:
+                            raise ValueError(translate(config, "invalid_parking_range", profile=profile.get("display_name", profile_id), source=source.upper()))
+                        settings[parking_min_key] = parking_min
+                        settings[parking_max_key] = parking_max
+
+                    epp_key = f"energy_preference_{source}_percent"
+                    if bool(variables[f"energy_preference_enabled_{source}"].get()):
+                        epp_value = self._optional_int(str(variables[epp_key].get()), epp_key, config, minimum=0, maximum=100)
+                        if epp_value is None:
+                            raise ValueError(translate(config, "not_empty", label=self.t("energy_preference")))
+                        settings[epp_key] = epp_value
+                    else:
+                        settings[epp_key] = None
+
             validate_config(config)
             try:
                 set_autostart_enabled(bool(app_config["autostart"]))
             except OSError as exc:
                 raise RuntimeError(translate(config, "autostart_error", error=exc)) from exc
             write_json_atomic(CONFIG_PATH, config)
-            selected_index = self.main_notebook.index(self.main_notebook.select()) if self.main_notebook is not None else 0
             self.app.reload_config(show_confirmation=False)
 
             if apply_selected:
-                profile_ids = self.app.config["app"]["toggle_profiles"]
-                if selected_index == 0 or selected_index > len(profile_ids):
+                if selected_profile_id is None or selected_profile_id not in self.app.config["profiles"]:
                     raise ValueError(self.app.t("select_profile_tab"))
-                self.app.apply_profile(profile_ids[selected_index - 1])
+                self.app.apply_profile(selected_profile_id)
                 messagebox.showinfo(APP_NAME, self.app.t("config_saved_applied"), parent=self.window)
             else:
                 messagebox.showinfo(APP_NAME, self.app.t("config_saved"), parent=self.window)
@@ -1302,6 +2029,8 @@ class PowerPlanSwitcherApp:
         self.popup: tk.Toplevel | None = None
         self.popup_after_ids: list[str] = []
         self.is_switching = False
+        self.last_applied_profile_id: str | None = None
+        self.cpu_info = detect_cpu_info()
         self.mutex_handle = create_mutex_or_exit(self.config)
 
         self.reload_config(show_confirmation=False, initial=True)
@@ -1319,6 +2048,29 @@ class PowerPlanSwitcherApp:
 
     def t(self, key: str, **values: Any) -> str:
         return translate(self.config, key, **values)
+
+    def cpu_capability_text(self) -> str:
+        try:
+            capabilities = processor_capability_summary(get_active_plan_guid())
+            features: list[str] = []
+            if capabilities["cpu_range"]:
+                features.append(self.t("feature_cpu_range"))
+            if capabilities["boost"]:
+                features.append(self.t("feature_boost"))
+            if capabilities["cooling"]:
+                features.append(self.t("feature_cooling"))
+            if capabilities["parking"]:
+                features.append(self.t("feature_parking"))
+            if capabilities["epp"]:
+                features.append(self.t("feature_epp"))
+            if capabilities["class1"]:
+                features.append(self.t("feature_class1"))
+            if not capabilities["query_ok"] or not features:
+                return self.t("cpu_features_unknown")
+            return self.t("cpu_features", features=", ".join(features))
+        except Exception:
+            LOGGER.exception("Could not build CPU capability summary")
+            return self.t("cpu_features_unknown")
 
     def _show_ready_popup(self) -> None:
         hotkey_name = HotkeyThread.display_name(self.config["app"]["hotkey"], self.language)
@@ -1369,7 +2121,7 @@ class PowerPlanSwitcherApp:
 
     def _create_tray_menu(self) -> pystray.Menu:
         profile_items = []
-        for profile_id in self.config["app"]["toggle_profiles"]:
+        for profile_id in ordered_profile_ids(self.config, enabled_only=True):
             display_name = self.config["profiles"][profile_id].get("display_name", profile_id)
             profile_items.append(pystray.MenuItem(self.t("apply_profile", name=display_name), self._profile_menu_action(profile_id)))
         hotkey_name = HotkeyThread.display_name(self.config["app"]["hotkey"], self.language)
@@ -1450,6 +2202,12 @@ class PowerPlanSwitcherApp:
             self.config = load_or_create_config()
             validate_config(self.config)
             self.config["app"]["autostart"] = is_autostart_enabled()
+            if self.config["app"]["autostart"]:
+                try:
+                    # Refresh the command after an EXE rename or application move.
+                    set_autostart_enabled(True)
+                except OSError:
+                    LOGGER.exception("Could not refresh autostart command")
             if not initial:
                 self._start_hotkey()
                 if self.tray_icon is not None:
@@ -1482,15 +2240,36 @@ class PowerPlanSwitcherApp:
         if self.is_switching:
             return
         try:
-            profile_ids = self.config["app"]["toggle_profiles"]
+            enabled_ids = ordered_profile_ids(self.config, enabled_only=True)
+            if not enabled_ids:
+                raise ValueError(self.t("at_least_one_enabled"))
+
             plans = list_power_plans()
             active_guid = get_active_plan_guid()
-            first_id, second_id = profile_ids
-            first_guid = resolve_plan_guid(self.config["profiles"][first_id], plans, self.config)
-            second_guid = resolve_plan_guid(self.config["profiles"][second_id], plans, self.config)
-            target_id = second_id if active_guid == first_guid else first_id
-            if active_guid not in (first_guid, second_guid):
-                target_id = first_id
+            available: list[tuple[str, str]] = []
+            for profile_id in enabled_ids:
+                try:
+                    guid = resolve_plan_guid(self.config["profiles"][profile_id], plans, self.config)
+                    available.append((profile_id, guid))
+                except Exception as exc:
+                    LOGGER.warning("Skipping unavailable profile %s: %s", profile_id, exc)
+
+            if not available:
+                raise RuntimeError(self.t("no_plans"))
+
+            current_index = -1
+            if self.last_applied_profile_id is not None:
+                for index, (profile_id, guid) in enumerate(available):
+                    if profile_id == self.last_applied_profile_id and guid == active_guid:
+                        current_index = index
+                        break
+            if current_index < 0:
+                for index, (_profile_id, guid) in enumerate(available):
+                    if guid == active_guid:
+                        current_index = index
+                        break
+
+            target_id = available[(current_index + 1) % len(available)][0]
             self.apply_profile(target_id)
         except Exception as exc:
             LOGGER.exception("Could not toggle profile")
@@ -1504,13 +2283,14 @@ class PowerPlanSwitcherApp:
             profile = self.config["profiles"][profile_id]
             plans = list_power_plans()
             plan_guid = resolve_plan_guid(profile, plans, self.config)
-            warnings = apply_profile_settings(plan_guid, profile.get("settings", {}))
+            warnings = apply_profile_settings(plan_guid, profile.get("settings", {}), self.config)
             run_powercfg(["/setactive", plan_guid])
             display_name = profile.get("display_name", profile_id)
             if warnings:
                 self.show_popup(self.t("profile_warning", name=display_name, count=len(warnings)), error=True)
             else:
                 self.show_popup(self.t("profile_active", name=display_name))
+            self.last_applied_profile_id = profile_id
             LOGGER.info("Applied profile %s to plan %s", profile_id, plan_guid)
         except Exception as exc:
             LOGGER.exception("Could not apply profile %s", profile_id)
@@ -1522,10 +2302,10 @@ class PowerPlanSwitcherApp:
         try:
             active_guid = get_active_plan_guid()
             plans = list_power_plans()
-            for profile_id in self.config["app"]["toggle_profiles"]:
+            for profile_id in ordered_profile_ids(self.config, enabled_only=True):
                 profile = self.config["profiles"][profile_id]
                 if resolve_plan_guid(profile, plans, self.config) == active_guid:
-                    apply_profile_settings(active_guid, profile.get("settings", {}))
+                    apply_profile_settings(active_guid, profile.get("settings", {}), self.config)
                     return
         except Exception:
             LOGGER.exception("Could not reapply active profile settings")

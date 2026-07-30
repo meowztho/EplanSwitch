@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ============================================================
-echo  Energieplan-Umschalter v1.3.0 - EXE Build
+echo  ePlan Switch v1.5.0 - EXE Build
 echo ============================================================
 
 echo.
@@ -46,6 +46,7 @@ echo [4/5] Alte Build-Dateien werden entfernt...
 if exist "build" rmdir /s /q "build"
 if exist "dist" rmdir /s /q "dist"
 if exist "Energieplan-Umschalter.spec" del /q "Energieplan-Umschalter.spec"
+if exist "ePlan-Switch.spec" del /q "ePlan-Switch.spec"
 
 echo [5/5] EXE wird gebaut...
 ".venv\Scripts\python.exe" -m PyInstaller ^
@@ -53,7 +54,7 @@ echo [5/5] EXE wird gebaut...
     --clean ^
     --onefile ^
     --windowed ^
-    --name "Energieplan-Umschalter" ^
+    --name "ePlan-Switch" ^
     %ICON_ARG% ^
     "power_plan_switcher.py"
 if errorlevel 1 goto :error
@@ -62,12 +63,13 @@ copy /y "config.json" "dist\config.json" >nul
 if exist "logo.ico" copy /y "logo.ico" "dist\logo.ico" >nul
 if exist "logo.png" copy /y "logo.png" "dist\logo.png" >nul
 if exist "README.md" copy /y "README.md" "dist\README.md" >nul
+if exist "README_EN.md" copy /y "README_EN.md" "dist\README_EN.md" >nul
 if exist "VERSION.txt" copy /y "VERSION.txt" "dist\VERSION.txt" >nul
 
 echo.
 echo ============================================================
 echo  FERTIG
-echo  EXE: %CD%\dist\Energieplan-Umschalter.exe
+echo  EXE: %CD%\dist\ePlan-Switch.exe
 echo  config.json bleibt neben der EXE frei editierbar.
 echo ============================================================
 start "" "%CD%\dist"
@@ -78,7 +80,7 @@ exit /b 0
 echo.
 echo ============================================================
 echo  BUILD FEHLGESCHLAGEN
- echo  Pruefe die Fehlermeldung oberhalb.
+echo  Pruefe die Fehlermeldung oberhalb.
 echo ============================================================
 pause
 exit /b 1

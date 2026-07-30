@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "app": {
     "language": "de",
     "autostart": false,
@@ -10,7 +10,7 @@
       "shift": false,
       "win": false
     },
-    "toggle_profiles": [
+    "profile_order": [
       "summer",
       "performance"
     ],
@@ -22,11 +22,15 @@
       "width": 390,
       "height": 78,
       "position": "bottom_right"
+    },
+    "cpu_compatibility": {
+      "auto_apply_efficiency_class_1": true
     }
   },
   "profiles": {
     "summer": {
       "display_name": "Sommer / Browsen",
+      "enabled": true,
       "plan": {
         "guid": "381b4222-f694-41f0-9685-ff5bb260df2e",
         "name_contains": [
@@ -38,6 +42,9 @@
         "processor_min_ac_percent": 5,
         "processor_max_ac_percent": 50,
         "processor_boost_mode_ac": 0,
+        "core_parking_min_ac_percent": 10,
+        "core_parking_max_ac_percent": 100,
+        "energy_preference_ac_percent": 80,
         "cooling_policy_ac": 1,
         "display_timeout_ac_minutes": 0,
         "sleep_timeout_ac_minutes": 0,
@@ -45,6 +52,9 @@
         "processor_min_dc_percent": 5,
         "processor_max_dc_percent": 50,
         "processor_boost_mode_dc": 0,
+        "core_parking_min_dc_percent": 5,
+        "core_parking_max_dc_percent": 100,
+        "energy_preference_dc_percent": 90,
         "cooling_policy_dc": 1,
         "display_timeout_dc_minutes": 0,
         "sleep_timeout_dc_minutes": 0,
@@ -53,6 +63,7 @@
     },
     "performance": {
       "display_name": "Leistung",
+      "enabled": true,
       "plan": {
         "guid": "e9a42b02-d5df-448d-aa00-03f14749eb61",
         "name_contains": [
@@ -64,6 +75,9 @@
         "processor_min_ac_percent": 5,
         "processor_max_ac_percent": 100,
         "processor_boost_mode_ac": 2,
+        "core_parking_min_ac_percent": 100,
+        "core_parking_max_ac_percent": 100,
+        "energy_preference_ac_percent": 0,
         "cooling_policy_ac": 1,
         "display_timeout_ac_minutes": 0,
         "sleep_timeout_ac_minutes": 0,
@@ -71,6 +85,9 @@
         "processor_min_dc_percent": 5,
         "processor_max_dc_percent": 100,
         "processor_boost_mode_dc": 2,
+        "core_parking_min_dc_percent": 100,
+        "core_parking_max_dc_percent": 100,
+        "energy_preference_dc_percent": 0,
         "cooling_policy_dc": 1,
         "display_timeout_dc_minutes": 0,
         "sleep_timeout_dc_minutes": 0,
