@@ -1,0 +1,81 @@
+{
+  "schema_version": 2,
+  "app": {
+    "language": "de",
+    "autostart": false,
+    "hotkey": {
+      "key": "F12",
+      "ctrl": true,
+      "alt": false,
+      "shift": false,
+      "win": false
+    },
+    "toggle_profiles": [
+      "summer",
+      "performance"
+    ],
+    "show_startup_popup": true,
+    "apply_active_profile_on_start": false,
+    "popup": {
+      "hold_ms": 900,
+      "fade_ms": 900,
+      "width": 390,
+      "height": 78,
+      "position": "bottom_right"
+    }
+  },
+  "profiles": {
+    "summer": {
+      "display_name": "Sommer / Browsen",
+      "plan": {
+        "guid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+        "name_contains": [
+          "Ausbalanciert",
+          "Balanced"
+        ]
+      },
+      "settings": {
+        "processor_min_ac_percent": 5,
+        "processor_max_ac_percent": 50,
+        "processor_boost_mode_ac": 0,
+        "cooling_policy_ac": 1,
+        "display_timeout_ac_minutes": 0,
+        "sleep_timeout_ac_minutes": 0,
+        "hibernate_timeout_ac_minutes": 0,
+        "processor_min_dc_percent": 5,
+        "processor_max_dc_percent": 50,
+        "processor_boost_mode_dc": 0,
+        "cooling_policy_dc": 1,
+        "display_timeout_dc_minutes": 0,
+        "sleep_timeout_dc_minutes": 0,
+        "hibernate_timeout_dc_minutes": 0
+      }
+    },
+    "performance": {
+      "display_name": "Leistung",
+      "plan": {
+        "guid": "e9a42b02-d5df-448d-aa00-03f14749eb61",
+        "name_contains": [
+          "Ultimative Leistung",
+          "Ultimate Performance"
+        ]
+      },
+      "settings": {
+        "processor_min_ac_percent": 5,
+        "processor_max_ac_percent": 100,
+        "processor_boost_mode_ac": 2,
+        "cooling_policy_ac": 1,
+        "display_timeout_ac_minutes": 0,
+        "sleep_timeout_ac_minutes": 0,
+        "hibernate_timeout_ac_minutes": 0,
+        "processor_min_dc_percent": 5,
+        "processor_max_dc_percent": 100,
+        "processor_boost_mode_dc": 2,
+        "cooling_policy_dc": 1,
+        "display_timeout_dc_minutes": 0,
+        "sleep_timeout_dc_minutes": 0,
+        "hibernate_timeout_dc_minutes": 0
+      }
+    }
+  }
+}
