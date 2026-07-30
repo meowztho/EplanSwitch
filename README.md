@@ -1,5 +1,7 @@
 # ePlan Switch
 
+<img src="logo.png" alt="Logo" width="75%">
+
 A lightweight Windows tray application for quickly switching between configurable power profiles.
 
 **ePlan Switch** can apply CPU limits, processor boost modes, cooling policies, display timeouts, sleep timeouts, and hibernation timeouts. It also includes a graphical configuration editor, global hotkey support, Windows autostart, and basic Windows power-plan management.
