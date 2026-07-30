@@ -1,6 +1,6 @@
 # ePlan Switch
 
-<img src="logo.png" alt="Logo" width="75%">
+<img src="logo.png" alt="Logo" width="50%">
 
 A lightweight Windows tray application for quickly switching between configurable power profiles.
 
