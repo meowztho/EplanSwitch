@@ -28,6 +28,8 @@ A lightweight Windows tray application for quickly switching between configurabl
 
 ## Default Profiles
 
+All values can be changed through the graphical editor or directly in `config.json`.
+
 ### Summer / Browsing
 
 Designed to reduce CPU power consumption and heat during light desktop work.
@@ -51,8 +53,6 @@ Designed for gaming, rendering, compilation, and other demanding workloads.
 - Display timeout: **Never**
 - Sleep timeout: **Never**
 - Hibernation timeout: **Never**
-
-All values can be changed through the graphical editor or directly in `config.json`.
 
 ## Screens and Controls
 
