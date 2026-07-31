@@ -1,17 +1,10 @@
-# ePlan Switch 1.9.0
+# ePlan Switch
 
 <img src="logo.png" alt="ePlan Switch logo" width="50%">
 
-[Deutsche Dokumentation](README.md)
+ePlan Switch is a lightweight Windows tray application that switches between configurable power profiles manually or automatically based on user inactivity, system load, running processes, GPU activity, and Remote Desktop usage.
 
-A lightweight Windows tray application for quickly switching between and editing configurable Windows power profiles.
-
-ePlan Switch is a lightweight Windows tray application that switches
-between configurable power profiles manually or automatically based on
-user inactivity, system load, running processes, GPU activity, and
-Remote Desktop usage.
-
-> Current application version: **1.9.0**
+> Current application version: **1.9.0**  
 > Supported platforms: **Windows 10 and Windows 11**
 
 ## New in version 1.9.0
