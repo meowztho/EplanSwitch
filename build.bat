@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ============================================================
-echo  ePlan Switch v1.5.0 - EXE Build
+echo  ePlan Switch v1.9.0 - EXE Build
 echo ============================================================
 
 echo.

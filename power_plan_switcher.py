@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import fnmatch
 from functools import partial
 import json
 import logging
@@ -24,7 +25,7 @@ import pystray
 
 
 APP_NAME = "ePlan Switch"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.9.0"
 CONFIG_FILE_NAME = "config.json"
 LOG_FILE_NAME = "energieplan-umschalter.log"
 MUTEX_NAME = "Local\\Energieplan-Umschalter-6D7F0D5E"
@@ -81,6 +82,26 @@ MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x4000
 ERROR_ALREADY_EXISTS = 183
 
+ACTION_QUEUE_POLL_MS = 100
+DYNAMIC_ACTIVE_POLL_MS = 3000
+DYNAMIC_IDLE_POLL_MS = 1000
+SYSTEM_LOAD_POLL_MS = 3000
+
+TH32CS_SNAPPROCESS = 0x00000002
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+KNOWN_WINDOWS_PROCESS_NAMES = {
+    "idle", "system", "registry", "memory compression", "secure system",
+    "smss.exe", "csrss.exe", "wininit.exe", "services.exe", "lsass.exe",
+    "svchost.exe", "fontdrvhost.exe", "winlogon.exe", "dwm.exe",
+    "sihost.exe", "taskhostw.exe", "runtimebroker.exe", "searchhost.exe",
+    "startmenuexperiencehost.exe", "shellexperiencehost.exe", "ctfmon.exe",
+    "audiodg.exe", "spoolsv.exe", "securityhealthservice.exe", "msmpeng.exe",
+    "nissrv.exe", "smartscreen.exe", "conhost.exe", "dllhost.exe",
+    "backgroundtaskhost.exe", "applicationframehost.exe", "systemsettings.exe",
+}
+
 VK_CODES: dict[str, int] = {
     **{f"F{i}": 0x6F + i for i in range(1, 25)},
     "PAUSE": 0x13,
@@ -121,6 +142,60 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "win": "Win",
         "startup_popup": "Beim Start ein kurzes Status-Popup anzeigen",
         "apply_on_start": "Beim Start die Werte des aktuell aktiven Profils erneut anwenden",
+        "dynamic_switch": "Dynamischer Profilwechsel",
+        "dynamic_switch_enable": "Bei Inaktivität automatisch das Energiesparprofil verwenden",
+        "dynamic_active_profile": "Profil bei Nutzung",
+        "dynamic_idle_profile": "Profil bei Inaktivität",
+        "dynamic_idle_minutes": "Wechsel nach (Minuten)",
+        "dynamic_switch_note": "Es werden genau zwei Profile verwendet. Bei Maus- oder Tastatureingabe wird sofort zum Nutzungsprofil zurückgewechselt.",
+        "dynamic_same_profile": "Für Nutzung und Inaktivität müssen unterschiedliche Profile gewählt werden.",
+        "dynamic_profile_missing": "Das für den dynamischen Wechsel ausgewählte Profil '{profile}' existiert nicht.",
+        "dynamic_idle_invalid": "Die Inaktivitätszeit muss mindestens 1 Minute betragen.",
+        "automatic_mode": "Automatischer Profilwechsel",
+        "automatic_mode_disabled": "Deaktiviert",
+        "automatic_mode_idle": "Nach Benutzer-Inaktivität",
+        "automatic_mode_load": "Nach Systemauslastung",
+        "manual_override": "Manuelle Profilwahl bis zum nächsten automatischen Zustandswechsel beibehalten",
+        "idle_mode": "Inaktivität",
+        "load_mode": "Systemauslastung",
+        "load_low_profile": "Energiesparprofil",
+        "load_high_profile": "Leistungsprofil",
+        "load_cpu_high": "Leistung ab CPU-Auslastung (%)",
+        "load_cpu_low": "Zurück unter CPU-Auslastung (%)",
+        "load_process_high": "Leistung ab überwachten Prozessen (%)",
+        "load_process_low": "Zurück unter überwachten Prozessen (%)",
+        "load_gpu_enable": "NVIDIA-GPU, Encoder und Decoder berücksichtigen, wenn NVML verfügbar ist",
+        "load_gpu_high": "Leistung ab GPU-Auslastung (%)",
+        "load_gpu_low": "Zurück unter GPU-Auslastung (%)",
+        "load_high_delay": "Hohe Last muss anliegen (Sek.)",
+        "load_low_delay": "Niedrige Last muss anliegen (Sek.)",
+        "load_min_hold": "Mindestdauer nach einem Wechsel (Sek.)",
+        "load_include_children": "Unterprozesse der überwachten Prozesse mit berücksichtigen",
+        "rdp_session_trigger": "Aktive Remotedesktop-Sitzung sofort berücksichtigen",
+        "rdp_idle_minutes": "RDP gilt nach dieser Inaktivität nicht mehr als aktiv (Min.)",
+        "rdp_session_note": "Nur eine verbundene, entsperrte und kürzlich verwendete RDP-Sitzung löst aus. Getrennte Sitzungen und per tscon an die Konsole übergebene Sitzungen werden ignoriert.",
+        "process_always": "Sofort auslösende Prozesse",
+        "process_load": "Lastabhängige Prozesse",
+        "process_launchers": "Launcher / Elternprozesse (nur Unterprozesse zählen)",
+        "process_containers": "WSL-, Docker- und VM-Prozesse (nur bei Last)",
+        "process_patterns_note": "Ein Muster pro Zeile; * und ? sind erlaubt. Laufende, aber untätige WSL-/Docker-Prozesse lösen keinen Wechsel aus.",
+        "process_immediate_note": "Sofort-Auslöser wechseln beim nächsten Prüflauf direkt zum Leistungsprofil. Prozentwerte, Verzögerungen, Mindesthaltezeit und manuelle Auswahl werden dabei ignoriert.",
+        "choose_running_processes": "Aus laufenden Prozessen auswählen...",
+        "process_picker_title": "Laufende Prozesse auswählen",
+        "process_picker_filter": "Filtern",
+        "process_picker_show_windows": "Windows-Systemprozesse anzeigen",
+        "process_picker_name": "Prozess",
+        "process_picker_pid": "PID",
+        "process_picker_path": "Pfad",
+        "process_picker_refresh": "Neu laden",
+        "process_picker_add": "Auswahl hinzufügen",
+        "process_picker_none": "Bitte mindestens einen Prozess auswählen.",
+        "process_picker_hidden_note": "Windows-Systemprozesse sind standardmäßig ausgeblendet. Die Auswahl fügt nur den Dateinamen zur Regel hinzu.",
+        "load_mode_note": "Schnelles Hochschalten, langsames Zurückschalten. Hohe und niedrige Schwellen verhindern ständiges Wechseln.",
+        "invalid_automatic_mode": "Unbekannter Automatikmodus: {mode}",
+        "load_threshold_order": "Die niedrige Schwelle für {label} darf nicht über der hohen Schwelle liegen.",
+        "load_profile_missing": "Das für die Lastautomatik ausgewählte Profil '{profile}' existiert nicht.",
+        "load_same_profile": "Energiespar- und Leistungsprofil müssen unterschiedlich sein.",
         "popup": "Popup",
         "visible_ms": "Sichtbar (ms)",
         "fade_ms": "Ausblenddauer (ms)",
@@ -236,6 +311,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "open_folder": "Programmordner öffnen",
         "exit": "Beenden",
         "version": "Version {version}",
+        "active_profile_tray": "Aktiv: {name}",
+        "active_profile_unknown": "Nicht erkannt",
         "already_running": "ePlan Switch läuft bereits.",
         "hotkey_unknown": "Unbekannte Taste: {key}",
         "hotkey_failed": "{hotkey} konnte nicht registriert werden (Windows-Fehler {code}). Öffne die Konfiguration und wähle eine andere Kombination.",
@@ -272,6 +349,60 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "win": "Win",
         "startup_popup": "Show a short status popup at startup",
         "apply_on_start": "Reapply the settings of the currently active profile at startup",
+        "dynamic_switch": "Dynamic profile switching",
+        "dynamic_switch_enable": "Automatically use the power-saving profile when idle",
+        "dynamic_active_profile": "Profile while active",
+        "dynamic_idle_profile": "Profile while idle",
+        "dynamic_idle_minutes": "Switch after (minutes)",
+        "dynamic_switch_note": "Exactly two profiles are used. Mouse or keyboard input returns to the active profile.",
+        "dynamic_same_profile": "The active and idle profiles must be different.",
+        "dynamic_profile_missing": "The profile selected for dynamic switching does not exist: '{profile}'.",
+        "dynamic_idle_invalid": "The idle time must be at least 1 minute.",
+        "automatic_mode": "Automatic profile switching",
+        "automatic_mode_disabled": "Disabled",
+        "automatic_mode_idle": "By user inactivity",
+        "automatic_mode_load": "By system load",
+        "manual_override": "Keep a manual profile selection until the next automatic state transition",
+        "idle_mode": "Inactivity",
+        "load_mode": "System load",
+        "load_low_profile": "Power-saving profile",
+        "load_high_profile": "Performance profile",
+        "load_cpu_high": "Use performance above CPU load (%)",
+        "load_cpu_low": "Return below CPU load (%)",
+        "load_process_high": "Use performance above monitored-process load (%)",
+        "load_process_low": "Return below monitored-process load (%)",
+        "load_gpu_enable": "Include NVIDIA GPU, encoder and decoder load when NVML is available",
+        "load_gpu_high": "Use performance above GPU load (%)",
+        "load_gpu_low": "Return below GPU load (%)",
+        "load_high_delay": "High load must persist (sec.)",
+        "load_low_delay": "Low load must persist (sec.)",
+        "load_min_hold": "Minimum time after a switch (sec.)",
+        "load_include_children": "Include child processes of monitored processes",
+        "rdp_session_trigger": "Treat an active Remote Desktop session as an immediate trigger",
+        "rdp_idle_minutes": "Stop treating RDP as active after this idle time (min.)",
+        "rdp_session_note": "Only a connected, unlocked and recently used RDP session triggers. Disconnected sessions and sessions transferred to the console with tscon are ignored.",
+        "process_always": "Processes that trigger immediately",
+        "process_load": "Load-sensitive processes",
+        "process_launchers": "Launchers / parent processes (only children count)",
+        "process_containers": "WSL, Docker and VM processes (load-sensitive)",
+        "process_patterns_note": "One pattern per line; * and ? are supported. Running but idle WSL/Docker processes do not trigger a switch.",
+        "process_immediate_note": "Immediate triggers switch directly to the performance profile on the next scan. Percentage thresholds, delays, minimum hold time and manual selection are ignored.",
+        "choose_running_processes": "Choose from running processes...",
+        "process_picker_title": "Choose running processes",
+        "process_picker_filter": "Filter",
+        "process_picker_show_windows": "Show Windows system processes",
+        "process_picker_name": "Process",
+        "process_picker_pid": "PID",
+        "process_picker_path": "Path",
+        "process_picker_refresh": "Refresh",
+        "process_picker_add": "Add selection",
+        "process_picker_none": "Select at least one process.",
+        "process_picker_hidden_note": "Windows system processes are hidden by default. Only the executable name is added to the rule.",
+        "load_mode_note": "Switch up quickly and back down slowly. Separate high and low thresholds prevent profile flapping.",
+        "invalid_automatic_mode": "Unknown automatic mode: {mode}",
+        "load_threshold_order": "The low threshold for {label} must not exceed the high threshold.",
+        "load_profile_missing": "The profile selected for load automation does not exist: '{profile}'.",
+        "load_same_profile": "The power-saving and performance profiles must be different.",
         "popup": "Popup",
         "visible_ms": "Visible (ms)",
         "fade_ms": "Fade duration (ms)",
@@ -387,6 +518,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "open_folder": "Open application folder",
         "exit": "Exit",
         "version": "Version {version}",
+        "active_profile_tray": "Active: {name}",
+        "active_profile_unknown": "Not detected",
         "already_running": "The power plan switcher is already running.",
         "hotkey_unknown": "Unknown key: {key}",
         "hotkey_failed": "{hotkey} could not be registered (Windows error {code}). Open the configuration and choose another combination.",
@@ -410,7 +543,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 4,
+    "schema_version": 8,
     "app": {
         "language": "de",
         "autostart": False,
@@ -424,6 +557,55 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "profile_order": ["summer", "performance"],
         "show_startup_popup": True,
         "apply_active_profile_on_start": False,
+        "dynamic_switch": {
+            "mode": "disabled",
+            "manual_override_until_transition": True,
+            "idle": {
+                "active_profile_id": "performance",
+                "idle_profile_id": "summer",
+                "idle_minutes": 10,
+            },
+            "load": {
+                "low_profile_id": "summer",
+                "high_profile_id": "performance",
+                "cpu_high_percent": 35,
+                "cpu_low_percent": 15,
+                "process_high_percent": 3,
+                "process_low_percent": 1,
+                "gpu_enabled": True,
+                "gpu_high_percent": 25,
+                "gpu_low_percent": 10,
+                "high_delay_seconds": 15,
+                "low_delay_seconds": 120,
+                "minimum_hold_seconds": 30,
+                "include_process_children": True,
+                "rdp_session_trigger_enabled": True,
+                "rdp_idle_minutes": 5,
+                "always_process_patterns": [],
+                "load_process_patterns": [
+                    "PalServer-Win64-Shipping.exe",
+                    "PalServer.exe",
+                    "*Server-Win64-Shipping.exe",
+                    "ffmpeg.exe",
+                    "sunshine.exe"
+                ],
+                "launcher_process_patterns": [
+                    "DGSM*.exe",
+                    "dgsm*.exe"
+                ],
+                "container_process_patterns": [
+                    "vmmem*",
+                    "wslhost.exe",
+                    "wsl.exe",
+                    "wslservice.exe",
+                    "wslrelay.exe",
+                    "com.docker.backend.exe",
+                    "com.docker.build.exe",
+                    "Docker Desktop.exe",
+                    "dockerd.exe"
+                ]
+            },
+        },
         "cpu_compatibility": {
             "auto_apply_efficiency_class_1": True,
         },
@@ -656,7 +838,52 @@ def migrate_config(raw: dict[str, Any]) -> dict[str, Any]:
 
     app_config["profile_order"] = ordered_profile_ids(migrated)
     app_config.pop("toggle_profiles", None)
-    migrated["schema_version"] = 4
+    dynamic_switch = app_config.setdefault("dynamic_switch", {})
+    default_active = "performance" if "performance" in profiles else next(iter(profiles), "")
+    default_idle = "summer" if "summer" in profiles else next(iter(profiles), "")
+    if "mode" not in dynamic_switch:
+        old_enabled = bool(dynamic_switch.get("enabled", False))
+        old_active = str(dynamic_switch.get("active_profile_id", default_active))
+        old_idle = str(dynamic_switch.get("idle_profile_id", default_idle))
+        try:
+            old_minutes = int(dynamic_switch.get("idle_minutes", 10))
+        except (TypeError, ValueError):
+            old_minutes = 10
+        dynamic_switch.clear()
+        dynamic_switch.update({
+            "mode": "idle" if old_enabled else "disabled",
+            "manual_override_until_transition": True,
+            "idle": {
+                "active_profile_id": old_active,
+                "idle_profile_id": old_idle,
+                "idle_minutes": old_minutes,
+            },
+            "load": deep_copy_json(DEFAULT_CONFIG["app"]["dynamic_switch"]["load"]),
+        })
+    dynamic_switch.setdefault("mode", "disabled")
+    dynamic_switch.setdefault("manual_override_until_transition", True)
+    idle_config = dynamic_switch.setdefault("idle", {})
+    idle_config.setdefault("active_profile_id", default_active)
+    idle_config.setdefault("idle_profile_id", default_idle)
+    idle_config.setdefault("idle_minutes", 10)
+    load_config = dynamic_switch.setdefault("load", {})
+    for key, value in DEFAULT_CONFIG["app"]["dynamic_switch"]["load"].items():
+        load_config.setdefault(key, deep_copy_json(value) if isinstance(value, (dict, list)) else value)
+    if schema_version < 8:
+        # Replace the old process-based RDP trigger with native session state.
+        patterns = load_config.get("always_process_patterns", [])
+        if isinstance(patterns, list):
+            load_config["always_process_patterns"] = [
+                item for item in patterns
+                if str(item).strip().lower() != "rdpclip.exe"
+            ]
+        load_config.setdefault("rdp_session_trigger_enabled", True)
+        load_config.setdefault("rdp_idle_minutes", 5)
+    dynamic_switch.pop("enabled", None)
+    dynamic_switch.pop("active_profile_id", None)
+    dynamic_switch.pop("idle_profile_id", None)
+    dynamic_switch.pop("idle_minutes", None)
+    migrated["schema_version"] = 8
     return migrated
 
 def load_or_create_config() -> dict[str, Any]:
@@ -671,7 +898,7 @@ def load_or_create_config() -> dict[str, Any]:
             merged["profiles"] = deep_copy_json(migrated["profiles"])
         merged.setdefault("app", {})["profile_order"] = ordered_profile_ids(migrated)
         merged["app"].pop("toggle_profiles", None)
-        merged["schema_version"] = 4
+        merged["schema_version"] = 8
         validate_config(merged)
         return merged
     except Exception as exc:
@@ -703,6 +930,63 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(translate(config, "invalid_profile_ref", profile=profile_id))
     if not ordered_profile_ids(config, enabled_only=True):
         raise ValueError(translate(config, "at_least_one_enabled"))
+
+    dynamic_switch = config.get("app", {}).get("dynamic_switch", {})
+    if not isinstance(dynamic_switch, dict):
+        raise ValueError("app.dynamic_switch must be an object.")
+    mode = str(dynamic_switch.get("mode", "disabled")).lower()
+    if mode not in ("disabled", "idle", "load"):
+        raise ValueError(translate(config, "invalid_automatic_mode", mode=mode))
+    if mode == "idle":
+        idle_config = dynamic_switch.get("idle", {})
+        if not isinstance(idle_config, dict):
+            raise ValueError("app.dynamic_switch.idle must be an object.")
+        active_profile_id = str(idle_config.get("active_profile_id", ""))
+        idle_profile_id = str(idle_config.get("idle_profile_id", ""))
+        for selected_profile_id in (active_profile_id, idle_profile_id):
+            if selected_profile_id not in profiles:
+                raise ValueError(translate(config, "dynamic_profile_missing", profile=selected_profile_id))
+        if active_profile_id == idle_profile_id:
+            raise ValueError(translate(config, "dynamic_same_profile"))
+        try:
+            idle_minutes = int(idle_config.get("idle_minutes", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(translate(config, "dynamic_idle_invalid")) from exc
+        if idle_minutes < 1:
+            raise ValueError(translate(config, "dynamic_idle_invalid"))
+    elif mode == "load":
+        load_config = dynamic_switch.get("load", {})
+        if not isinstance(load_config, dict):
+            raise ValueError("app.dynamic_switch.load must be an object.")
+        low_profile_id = str(load_config.get("low_profile_id", ""))
+        high_profile_id = str(load_config.get("high_profile_id", ""))
+        for selected_profile_id in (low_profile_id, high_profile_id):
+            if selected_profile_id not in profiles:
+                raise ValueError(translate(config, "load_profile_missing", profile=selected_profile_id))
+        if low_profile_id == high_profile_id:
+            raise ValueError(translate(config, "load_same_profile"))
+        threshold_pairs = (
+            ("cpu", "cpu_low_percent", "cpu_high_percent"),
+            ("process", "process_low_percent", "process_high_percent"),
+            ("gpu", "gpu_low_percent", "gpu_high_percent"),
+        )
+        for label, low_key, high_key in threshold_pairs:
+            low_value = int(load_config.get(low_key, 0))
+            high_value = int(load_config.get(high_key, 0))
+            if not 0 <= low_value <= 100 or not 0 <= high_value <= 100:
+                raise ValueError(f"{low_key}/{high_key}: expected 0..100")
+            if low_value > high_value:
+                raise ValueError(translate(config, "load_threshold_order", label=label))
+        for key in ("high_delay_seconds", "low_delay_seconds", "minimum_hold_seconds"):
+            if int(load_config.get(key, 0)) < 0:
+                raise ValueError(f"{key}: expected >= 0")
+        rdp_idle_minutes = int(load_config.get("rdp_idle_minutes", 5))
+        if not 1 <= rdp_idle_minutes <= 1440:
+            raise ValueError("rdp_idle_minutes: expected 1..1440")
+        for key in ("always_process_patterns", "load_process_patterns", "launcher_process_patterns", "container_process_patterns"):
+            patterns = load_config.get(key, [])
+            if not isinstance(patterns, list) or not all(isinstance(item, str) for item in patterns):
+                raise ValueError(f"{key}: expected a list of strings")
 
     language = str(config.get("app", {}).get("language", "de")).lower()
     if language not in TRANSLATIONS:
@@ -1184,6 +1468,15 @@ class ConfigEditor:
         self.standard_display_to_key: dict[str, str] = {}
         self.standard_combo: ttk.Combobox | None = None
         self.main_notebook: ttk.Notebook | None = None
+        self.dynamic_profile_map: dict[str, str] = {}
+        self.dynamic_profile_combos: list[ttk.Combobox] = []
+        self.dynamic_mode_map: dict[str, str] = {}
+        self.dynamic_mode_combo: ttk.Combobox | None = None
+        self.dynamic_idle_frame: ttk.LabelFrame | None = None
+        self.dynamic_load_frame: ttk.LabelFrame | None = None
+        self.dynamic_idle_widgets: list[tk.Widget] = []
+        self.dynamic_load_widgets: list[tk.Widget] = []
+        self.dynamic_text_widgets: dict[str, tk.Text] = {}
         self._set_window_icon()
         self._build_ui()
         self._show_window()
@@ -1237,8 +1530,7 @@ class ConfigEditor:
         self.main_notebook = notebook
         notebook.pack(fill="both", expand=True)
 
-        general_tab = ttk.Frame(notebook, padding=14)
-        notebook.add(general_tab, text=self.t("general"))
+        general_tab = self._create_scrollable_source_tab(notebook, self.t("general"))
         self._build_general_tab(general_tab)
 
         for profile_id in self.profile_order:
@@ -1352,8 +1644,189 @@ class ConfigEditor:
         self.working_profiles.pop(profile_id, None)
         self.profile_order = [item for item in self.profile_order if item != profile_id]
         self.last_selected_profile_id = self.profile_order[0] if self.profile_order else None
+        self._refresh_dynamic_profile_choices()
         if self.main_notebook is not None and self.last_selected_profile_id is not None:
             self.main_notebook.select(self.profile_tabs[self.last_selected_profile_id])
+
+    def _dynamic_profile_choices(self) -> dict[str, str]:
+        choices: dict[str, str] = {}
+        for profile_id in self.profile_order:
+            profile = self.working_profiles.get(profile_id, {})
+            variables = self.profile_variables.get(profile_id, {})
+            if variables.get("display_name") is not None:
+                name = str(variables["display_name"].get()).strip() or profile_id
+            else:
+                name = str(profile.get("display_name", profile_id))
+            choices[f"{name} [{profile_id}]"] = profile_id
+        return choices
+
+    def _refresh_dynamic_profile_choices(self) -> None:
+        profile_keys = (
+            "dynamic_switch.idle.active_profile_id",
+            "dynamic_switch.idle.idle_profile_id",
+            "dynamic_switch.load.low_profile_id",
+            "dynamic_switch.load.high_profile_id",
+        )
+        previous_ids: dict[str, str] = {}
+        for key in profile_keys:
+            variable = self.variables.get(key)
+            if variable is not None:
+                previous_ids[key] = self.dynamic_profile_map.get(str(variable.get()), "")
+        self.dynamic_profile_map = self._dynamic_profile_choices()
+        values = list(self.dynamic_profile_map.keys())
+        reverse_new = {value: key for key, value in self.dynamic_profile_map.items()}
+        for combo in self.dynamic_profile_combos:
+            combo.configure(values=values)
+        for key, profile_id in previous_ids.items():
+            variable = self.variables.get(key)
+            if variable is not None and profile_id in reverse_new:
+                variable.set(reverse_new[profile_id])
+        for key in profile_keys:
+            variable = self.variables.get(key)
+            if variable is not None and str(variable.get()) not in self.dynamic_profile_map and values:
+                variable.set(values[0])
+
+    @staticmethod
+    def _set_widget_enabled(widget: tk.Widget, enabled: bool, readonly: bool = False) -> None:
+        try:
+            if isinstance(widget, ttk.Combobox):
+                widget.configure(state="readonly" if enabled and readonly else ("normal" if enabled else "disabled"))
+            elif isinstance(widget, tk.Text):
+                widget.configure(state="normal" if enabled else "disabled")
+            else:
+                if enabled:
+                    widget.state(["!disabled"])  # type: ignore[attr-defined]
+                else:
+                    widget.state(["disabled"])  # type: ignore[attr-defined]
+        except (tk.TclError, AttributeError):
+            LOGGER.exception("Could not update automatic-switch control state")
+
+    def _update_dynamic_control_state(self) -> None:
+        mode_variable = self.variables.get("dynamic_switch.mode")
+        mode_display = str(mode_variable.get()) if mode_variable is not None else ""
+        mode = self.dynamic_mode_map.get(mode_display, "disabled")
+        for widget in self.dynamic_idle_widgets:
+            self._set_widget_enabled(widget, mode == "idle", readonly=isinstance(widget, ttk.Combobox))
+        for widget in self.dynamic_load_widgets:
+            self._set_widget_enabled(widget, mode == "load", readonly=isinstance(widget, ttk.Combobox))
+        if self.dynamic_idle_frame is not None:
+            if mode == "idle":
+                self.dynamic_idle_frame.grid()
+            else:
+                self.dynamic_idle_frame.grid_remove()
+        if self.dynamic_load_frame is not None:
+            if mode == "load":
+                self.dynamic_load_frame.grid()
+            else:
+                self.dynamic_load_frame.grid_remove()
+
+    def open_process_picker(self, config_key: str) -> None:
+        editor = self.dynamic_text_widgets.get(config_key)
+        if editor is None:
+            return
+
+        dialog = tk.Toplevel(self.window)
+        dialog.title(f"{APP_NAME} - {self.t('process_picker_title')}")
+        dialog.geometry("920x600")
+        dialog.minsize(720, 460)
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        outer = ttk.Frame(dialog, padding=12)
+        outer.pack(fill="both", expand=True)
+        controls = ttk.Frame(outer)
+        controls.pack(fill="x", pady=(0, 8))
+        ttk.Label(controls, text=self.t("process_picker_filter")).pack(side="left")
+        filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(controls, textvariable=filter_var, width=34)
+        filter_entry.pack(side="left", padx=(8, 16))
+        show_windows_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            controls,
+            text=self.t("process_picker_show_windows"),
+            variable=show_windows_var,
+        ).pack(side="left")
+
+        tree_frame = ttk.Frame(outer)
+        tree_frame.pack(fill="both", expand=True)
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=("pid", "path"),
+            show="tree headings",
+            selectmode="extended",
+        )
+        tree.heading("#0", text=self.t("process_picker_name"))
+        tree.heading("pid", text=self.t("process_picker_pid"))
+        tree.heading("path", text=self.t("process_picker_path"))
+        tree.column("#0", width=250, minwidth=150, stretch=False)
+        tree.column("pid", width=80, minwidth=60, anchor="e", stretch=False)
+        tree.column("path", width=520, minwidth=220, stretch=True)
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        note = ttk.Label(outer, text=self.t("process_picker_hidden_note"), wraplength=860, justify="left")
+        note.pack(fill="x", pady=(8, 6))
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x")
+
+        process_records: list[dict[str, Any]] = []
+
+        def populate() -> None:
+            tree.delete(*tree.get_children())
+            query = filter_var.get().strip().lower()
+            show_windows = bool(show_windows_var.get())
+            for process in process_records:
+                if bool(process.get("is_windows")) and not show_windows:
+                    continue
+                name = str(process.get("name", ""))
+                path = str(process.get("path", ""))
+                pid = int(process.get("pid", 0))
+                haystack = f"{name} {path} {pid}".lower()
+                if query and query not in haystack:
+                    continue
+                tree.insert("", "end", iid=str(pid), text=name, values=(pid, path))
+
+        def refresh() -> None:
+            nonlocal process_records
+            dialog.configure(cursor="watch")
+            dialog.update_idletasks()
+            try:
+                process_records = list_processes_for_picker()
+                populate()
+            except Exception as exc:
+                LOGGER.exception("Could not enumerate running processes")
+                messagebox.showerror(APP_NAME, str(exc), parent=dialog)
+            finally:
+                dialog.configure(cursor="")
+
+        def add_selection() -> None:
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning(APP_NAME, self.t("process_picker_none"), parent=dialog)
+                return
+            existing = [line.strip() for line in editor.get("1.0", "end").splitlines() if line.strip()]
+            existing_lower = {line.lower() for line in existing}
+            additions: list[str] = []
+            for item_id in selected:
+                name = str(tree.item(item_id, "text")).strip()
+                if name and name.lower() not in existing_lower:
+                    additions.append(name)
+                    existing_lower.add(name.lower())
+            combined = existing + additions
+            editor.delete("1.0", "end")
+            editor.insert("1.0", "\n".join(combined))
+            dialog.destroy()
+
+        ttk.Button(buttons, text=self.t("cancel"), command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text=self.t("process_picker_add"), command=add_selection).pack(side="right", padx=8)
+        ttk.Button(buttons, text=self.t("process_picker_refresh"), command=refresh).pack(side="left")
+        filter_var.trace_add("write", lambda *_args: populate())
+        show_windows_var.trace_add("write", lambda *_args: populate())
+        tree.bind("<Double-1>", lambda _event: add_selection())
+        dialog.after(20, refresh)
+        filter_entry.focus_set()
 
     def _build_general_tab(self, parent: ttk.Frame) -> None:
         config = self.app.config["app"]
@@ -1392,41 +1865,193 @@ class ConfigEditor:
         self.variables["apply_active_profile_on_start"] = apply_start
         ttk.Checkbutton(parent, text=self.t("apply_on_start"), variable=apply_start).grid(row=6, column=0, columnspan=4, sticky="w", pady=4)
 
-        ttk.Label(parent, text=self.t("cpu_compatibility"), font=("Segoe UI", 11, "bold")).grid(row=7, column=0, columnspan=4, sticky="w", pady=(20, 8))
+        dynamic = config.get("dynamic_switch", {})
+        dynamic_frame = ttk.LabelFrame(parent, text=self.t("automatic_mode"), padding=10)
+        dynamic_frame.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(18, 4))
+        dynamic_frame.columnconfigure(1, weight=1)
+
+        self.dynamic_mode_map = {
+            self.t("automatic_mode_disabled"): "disabled",
+            self.t("automatic_mode_idle"): "idle",
+            self.t("automatic_mode_load"): "load",
+        }
+        reverse_modes = {value: key for key, value in self.dynamic_mode_map.items()}
+        mode_var = tk.StringVar(value=reverse_modes.get(str(dynamic.get("mode", "disabled")), self.t("automatic_mode_disabled")))
+        self.variables["dynamic_switch.mode"] = mode_var
+        ttk.Label(dynamic_frame, text=self.t("automatic_mode")).grid(row=0, column=0, sticky="w", padx=(0, 12), pady=4)
+        self.dynamic_mode_combo = ttk.Combobox(dynamic_frame, textvariable=mode_var, values=list(self.dynamic_mode_map.keys()), state="readonly", width=38)
+        self.dynamic_mode_combo.grid(row=0, column=1, sticky="ew", pady=4)
+        self.dynamic_mode_combo.bind("<<ComboboxSelected>>", lambda _event: self._update_dynamic_control_state())
+
+        manual_override = tk.BooleanVar(value=bool(dynamic.get("manual_override_until_transition", True)))
+        self.variables["dynamic_switch.manual_override_until_transition"] = manual_override
+        ttk.Checkbutton(dynamic_frame, text=self.t("manual_override"), variable=manual_override).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 10))
+
+        self.dynamic_profile_map = self._dynamic_profile_choices()
+        reverse_profiles = {profile_id: display for display, profile_id in self.dynamic_profile_map.items()}
+
+        idle_config = dynamic.get("idle", {})
+        idle_frame = ttk.LabelFrame(dynamic_frame, text=self.t("idle_mode"), padding=8)
+        self.dynamic_idle_frame = idle_frame
+        idle_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=5)
+        idle_frame.columnconfigure(1, weight=1)
+        for row, (label_key, config_key, default_id) in enumerate((
+            ("dynamic_active_profile", "active_profile_id", "performance"),
+            ("dynamic_idle_profile", "idle_profile_id", "summer"),
+        )):
+            label = ttk.Label(idle_frame, text=self.t(label_key))
+            label.grid(row=row, column=0, sticky="w", padx=(0, 12), pady=4)
+            self.dynamic_idle_widgets.append(label)
+            profile_id = str(idle_config.get(config_key, default_id))
+            variable = tk.StringVar(value=reverse_profiles.get(profile_id, next(iter(self.dynamic_profile_map), "")))
+            self.variables[f"dynamic_switch.idle.{config_key}"] = variable
+            combo = ttk.Combobox(idle_frame, textvariable=variable, values=list(self.dynamic_profile_map.keys()), state="readonly", width=42)
+            combo.grid(row=row, column=1, sticky="ew", pady=4)
+            self.dynamic_profile_combos.append(combo)
+            self.dynamic_idle_widgets.append(combo)
+        idle_label = ttk.Label(idle_frame, text=self.t("dynamic_idle_minutes"))
+        idle_label.grid(row=2, column=0, sticky="w", padx=(0, 12), pady=4)
+        self.dynamic_idle_widgets.append(idle_label)
+        idle_minutes = tk.StringVar(value=str(idle_config.get("idle_minutes", 10)))
+        self.variables["dynamic_switch.idle.idle_minutes"] = idle_minutes
+        idle_spinbox = ttk.Spinbox(idle_frame, textvariable=idle_minutes, from_=1, to=1440, width=12)
+        idle_spinbox.grid(row=2, column=1, sticky="w", pady=4)
+        self.dynamic_idle_widgets.append(idle_spinbox)
+        idle_note = ttk.Label(idle_frame, text=self.t("dynamic_switch_note"), wraplength=790, justify="left")
+        idle_note.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.dynamic_idle_widgets.append(idle_note)
+
+        load_config = dynamic.get("load", {})
+        load_frame = ttk.LabelFrame(dynamic_frame, text=self.t("load_mode"), padding=8)
+        self.dynamic_load_frame = load_frame
+        load_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=5)
+        load_frame.columnconfigure(1, weight=1)
+        for row, (label_key, config_key, default_id) in enumerate((
+            ("load_low_profile", "low_profile_id", "summer"),
+            ("load_high_profile", "high_profile_id", "performance"),
+        )):
+            label = ttk.Label(load_frame, text=self.t(label_key))
+            label.grid(row=row, column=0, sticky="w", padx=(0, 12), pady=4)
+            self.dynamic_load_widgets.append(label)
+            profile_id = str(load_config.get(config_key, default_id))
+            variable = tk.StringVar(value=reverse_profiles.get(profile_id, next(iter(self.dynamic_profile_map), "")))
+            self.variables[f"dynamic_switch.load.{config_key}"] = variable
+            combo = ttk.Combobox(load_frame, textvariable=variable, values=list(self.dynamic_profile_map.keys()), state="readonly", width=42)
+            combo.grid(row=row, column=1, sticky="ew", pady=4)
+            self.dynamic_profile_combos.append(combo)
+            self.dynamic_load_widgets.append(combo)
+
+        numeric_fields = (
+            ("load_cpu_high", "cpu_high_percent", 35, 0, 100),
+            ("load_cpu_low", "cpu_low_percent", 15, 0, 100),
+            ("load_process_high", "process_high_percent", 3, 0, 100),
+            ("load_process_low", "process_low_percent", 1, 0, 100),
+            ("load_gpu_high", "gpu_high_percent", 25, 0, 100),
+            ("load_gpu_low", "gpu_low_percent", 10, 0, 100),
+            ("load_high_delay", "high_delay_seconds", 15, 0, 86400),
+            ("load_low_delay", "low_delay_seconds", 120, 0, 86400),
+            ("load_min_hold", "minimum_hold_seconds", 30, 0, 86400),
+        )
+        for offset, (label_key, config_key, default, _minimum, _maximum) in enumerate(numeric_fields, start=2):
+            label = ttk.Label(load_frame, text=self.t(label_key))
+            label.grid(row=offset, column=0, sticky="w", padx=(0, 12), pady=3)
+            self.dynamic_load_widgets.append(label)
+            variable = tk.StringVar(value=str(load_config.get(config_key, default)))
+            self.variables[f"dynamic_switch.load.{config_key}"] = variable
+            entry = ttk.Entry(load_frame, textvariable=variable, width=12)
+            entry.grid(row=offset, column=1, sticky="w", pady=3)
+            self.dynamic_load_widgets.append(entry)
+
+        gpu_enabled = tk.BooleanVar(value=bool(load_config.get("gpu_enabled", True)))
+        self.variables["dynamic_switch.load.gpu_enabled"] = gpu_enabled
+        gpu_check = ttk.Checkbutton(load_frame, text=self.t("load_gpu_enable"), variable=gpu_enabled)
+        gpu_check.grid(row=11, column=0, columnspan=2, sticky="w", pady=(6, 3))
+        self.dynamic_load_widgets.append(gpu_check)
+
+        include_children = tk.BooleanVar(value=bool(load_config.get("include_process_children", True)))
+        self.variables["dynamic_switch.load.include_process_children"] = include_children
+        children_check = ttk.Checkbutton(load_frame, text=self.t("load_include_children"), variable=include_children)
+        children_check.grid(row=12, column=0, columnspan=2, sticky="w", pady=3)
+        self.dynamic_load_widgets.append(children_check)
+
+        rdp_enabled = tk.BooleanVar(value=bool(load_config.get("rdp_session_trigger_enabled", True)))
+        self.variables["dynamic_switch.load.rdp_session_trigger_enabled"] = rdp_enabled
+        rdp_check = ttk.Checkbutton(load_frame, text=self.t("rdp_session_trigger"), variable=rdp_enabled)
+        rdp_check.grid(row=13, column=0, columnspan=2, sticky="w", pady=(8, 3))
+        self.dynamic_load_widgets.append(rdp_check)
+
+        rdp_idle_label = ttk.Label(load_frame, text=self.t("rdp_idle_minutes"))
+        rdp_idle_label.grid(row=14, column=0, sticky="w", padx=(0, 12), pady=3)
+        self.dynamic_load_widgets.append(rdp_idle_label)
+        rdp_idle_minutes = tk.StringVar(value=str(load_config.get("rdp_idle_minutes", 5)))
+        self.variables["dynamic_switch.load.rdp_idle_minutes"] = rdp_idle_minutes
+        rdp_idle_entry = ttk.Entry(load_frame, textvariable=rdp_idle_minutes, width=12)
+        rdp_idle_entry.grid(row=14, column=1, sticky="w", pady=3)
+        self.dynamic_load_widgets.append(rdp_idle_entry)
+
+        rdp_note = ttk.Label(load_frame, text=self.t("rdp_session_note"), wraplength=790, justify="left")
+        rdp_note.grid(row=15, column=0, columnspan=2, sticky="w", pady=(3, 4))
+        self.dynamic_load_widgets.append(rdp_note)
+
+        patterns_frame = ttk.Frame(load_frame)
+        patterns_frame.grid(row=16, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        patterns_frame.columnconfigure(1, weight=1)
+        self.dynamic_load_widgets.append(patterns_frame)
+        pattern_fields = (
+            ("process_always", "always_process_patterns"),
+            ("process_load", "load_process_patterns"),
+            ("process_launchers", "launcher_process_patterns"),
+            ("process_containers", "container_process_patterns"),
+        )
+        for row, (label_key, config_key) in enumerate(pattern_fields):
+            label = ttk.Label(patterns_frame, text=self.t(label_key))
+            label.grid(row=row, column=0, sticky="nw", padx=(0, 12), pady=4)
+            self.dynamic_load_widgets.append(label)
+            editor = tk.Text(patterns_frame, height=3, width=48, wrap="none")
+            editor.grid(row=row, column=1, sticky="ew", pady=4)
+            patterns = load_config.get(config_key, [])
+            editor.insert("1.0", "\n".join(str(item) for item in patterns if str(item).strip()))
+            self.dynamic_text_widgets[config_key] = editor
+            self.dynamic_load_widgets.append(editor)
+            picker_button = ttk.Button(
+                patterns_frame,
+                text=self.t("choose_running_processes"),
+                command=partial(self.open_process_picker, config_key),
+            )
+            picker_button.grid(row=row, column=2, sticky="n", padx=(10, 0), pady=4)
+            self.dynamic_load_widgets.append(picker_button)
+
+        immediate_note = ttk.Label(load_frame, text=self.t("process_immediate_note"), wraplength=790, justify="left")
+        immediate_note.grid(row=17, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        self.dynamic_load_widgets.append(immediate_note)
+        patterns_note = ttk.Label(load_frame, text=self.t("process_patterns_note"), wraplength=790, justify="left")
+        patterns_note.grid(row=18, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.dynamic_load_widgets.append(patterns_note)
+        load_note = ttk.Label(load_frame, text=self.t("load_mode_note"), wraplength=790, justify="left")
+        load_note.grid(row=19, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.dynamic_load_widgets.append(load_note)
+        self._update_dynamic_control_state()
+
+        ttk.Label(parent, text=self.t("cpu_compatibility"), font=("Segoe UI", 11, "bold")).grid(row=8, column=0, columnspan=4, sticky="w", pady=(20, 8))
         cpu_info = self.app.cpu_info
-        ttk.Label(parent, text=self.t("detected_cpu", name=cpu_info.get("name", "Unknown")), wraplength=850, justify="left").grid(row=8, column=0, columnspan=4, sticky="w", pady=2)
-        ttk.Label(
-            parent,
-            text=self.t(
-                "cpu_details",
-                vendor=cpu_info.get("vendor_family", cpu_info.get("vendor", "Unknown")),
-                logical=cpu_info.get("logical_processors", 0),
-                architecture=cpu_info.get("architecture", "Unknown"),
-            ),
-            wraplength=850,
-            justify="left",
-        ).grid(row=9, column=0, columnspan=4, sticky="w", pady=2)
-        ttk.Label(parent, text=self.app.cpu_capability_text(), wraplength=850, justify="left").grid(row=10, column=0, columnspan=4, sticky="w", pady=(2, 8))
+        ttk.Label(parent, text=self.t("detected_cpu", name=cpu_info.get("name", "Unknown")), wraplength=850, justify="left").grid(row=9, column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(parent, text=self.t("cpu_details", vendor=cpu_info.get("vendor_family", cpu_info.get("vendor", "Unknown")), logical=cpu_info.get("logical_processors", 0), architecture=cpu_info.get("architecture", "Unknown")), wraplength=850, justify="left").grid(row=10, column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(parent, text=self.app.cpu_capability_text(), wraplength=850, justify="left").grid(row=11, column=0, columnspan=4, sticky="w", pady=(2, 8))
         compatibility = config.get("cpu_compatibility", {})
         auto_class1 = tk.BooleanVar(value=bool(compatibility.get("auto_apply_efficiency_class_1", True)))
         self.variables["cpu_compatibility.auto_apply_efficiency_class_1"] = auto_class1
-        ttk.Checkbutton(parent, text=self.t("auto_class1"), variable=auto_class1).grid(row=11, column=0, columnspan=4, sticky="w", pady=4)
-        ttk.Label(parent, text=self.t("auto_class1_note"), wraplength=850, justify="left").grid(row=12, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        ttk.Checkbutton(parent, text=self.t("auto_class1"), variable=auto_class1).grid(row=12, column=0, columnspan=4, sticky="w", pady=4)
+        ttk.Label(parent, text=self.t("auto_class1_note"), wraplength=850, justify="left").grid(row=13, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
         popup = config.get("popup", {})
-        ttk.Label(parent, text=self.t("popup"), font=("Segoe UI", 11, "bold")).grid(row=13, column=0, columnspan=4, sticky="w", pady=(20, 10))
-        popup_fields = [
-            (self.t("visible_ms"), "hold_ms", 900),
-            (self.t("fade_ms"), "fade_ms", 900),
-            (self.t("width"), "width", 390),
-            (self.t("height"), "height", 78),
-        ]
-        for row, (label, key, default) in enumerate(popup_fields, start=14):
+        ttk.Label(parent, text=self.t("popup"), font=("Segoe UI", 11, "bold")).grid(row=14, column=0, columnspan=4, sticky="w", pady=(20, 10))
+        popup_fields = [(self.t("visible_ms"), "hold_ms", 900), (self.t("fade_ms"), "fade_ms", 900), (self.t("width"), "width", 390), (self.t("height"), "height", 78)]
+        for row, (label, key, default) in enumerate(popup_fields, start=15):
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
             variable = tk.StringVar(value=str(popup.get(key, default)))
             self.variables[f"popup.{key}"] = variable
             ttk.Entry(parent, textvariable=variable, width=16).grid(row=row, column=1, sticky="w")
-        parent.columnconfigure(3, weight=1)
+        parent.columnconfigure(1, weight=1)
 
     def _create_scrollable_source_tab(
         self, notebook: ttk.Notebook, title: str
@@ -1515,7 +2140,11 @@ class ConfigEditor:
             except tk.TclError:
                 pass
 
-        name_var.trace_add("write", update_profile_tab_title)
+        def update_profile_choices(*_args: Any) -> None:
+            update_profile_tab_title()
+            self._refresh_dynamic_profile_choices()
+
+        name_var.trace_add("write", update_profile_choices)
         enabled_var.trace_add("write", update_profile_tab_title)
         update_profile_tab_title()
 
@@ -1899,7 +2528,7 @@ class ConfigEditor:
         try:
             selected_profile_id = self._selected_profile_id()
             config = deep_copy_json(self.app.config)
-            config["schema_version"] = 4
+            config["schema_version"] = 8
             config["profiles"] = deep_copy_json(self.working_profiles)
             language_map = self.variables["language_map"]  # type: ignore[assignment]
             language_display = str(self.variables["language"].get())
@@ -1914,6 +2543,56 @@ class ConfigEditor:
             app_config["show_startup_popup"] = bool(self.variables["show_startup_popup"].get())
             app_config["apply_active_profile_on_start"] = bool(self.variables["apply_active_profile_on_start"].get())
             app_config["autostart"] = bool(self.variables["autostart"].get())
+
+            mode_display = str(self.variables["dynamic_switch.mode"].get())
+            dynamic_mode = self.dynamic_mode_map.get(mode_display, "disabled")
+            idle_active_display = str(self.variables["dynamic_switch.idle.active_profile_id"].get())
+            idle_idle_display = str(self.variables["dynamic_switch.idle.idle_profile_id"].get())
+            load_low_display = str(self.variables["dynamic_switch.load.low_profile_id"].get())
+            load_high_display = str(self.variables["dynamic_switch.load.high_profile_id"].get())
+            idle_minutes = self._optional_int(str(self.variables["dynamic_switch.idle.idle_minutes"].get()), self.t("dynamic_idle_minutes"), config, minimum=1, maximum=1440)
+            load_config: dict[str, Any] = {
+                "low_profile_id": self.dynamic_profile_map.get(load_low_display, ""),
+                "high_profile_id": self.dynamic_profile_map.get(load_high_display, ""),
+                "gpu_enabled": bool(self.variables["dynamic_switch.load.gpu_enabled"].get()),
+                "include_process_children": bool(self.variables["dynamic_switch.load.include_process_children"].get()),
+                "rdp_session_trigger_enabled": bool(self.variables["dynamic_switch.load.rdp_session_trigger_enabled"].get()),
+            }
+            numeric_limits = {
+                "cpu_high_percent": (0, 100),
+                "cpu_low_percent": (0, 100),
+                "process_high_percent": (0, 100),
+                "process_low_percent": (0, 100),
+                "gpu_high_percent": (0, 100),
+                "gpu_low_percent": (0, 100),
+                "high_delay_seconds": (0, 86400),
+                "low_delay_seconds": (0, 86400),
+                "minimum_hold_seconds": (0, 86400),
+                "rdp_idle_minutes": (1, 1440),
+            }
+            for key, (minimum, maximum) in numeric_limits.items():
+                parsed = self._optional_int(
+                    str(self.variables[f"dynamic_switch.load.{key}"].get()),
+                    key,
+                    config,
+                    minimum=minimum,
+                    maximum=maximum,
+                )
+                if parsed is None:
+                    raise ValueError(translate(config, "not_empty", label=key))
+                load_config[key] = parsed
+            for key, editor in self.dynamic_text_widgets.items():
+                load_config[key] = [line.strip() for line in editor.get("1.0", "end").splitlines() if line.strip()]
+            app_config["dynamic_switch"] = {
+                "mode": dynamic_mode,
+                "manual_override_until_transition": bool(self.variables["dynamic_switch.manual_override_until_transition"].get()),
+                "idle": {
+                    "active_profile_id": self.dynamic_profile_map.get(idle_active_display, ""),
+                    "idle_profile_id": self.dynamic_profile_map.get(idle_idle_display, ""),
+                    "idle_minutes": idle_minutes if idle_minutes is not None else 10,
+                },
+                "load": load_config,
+            }
 
             app_config.setdefault("cpu_compatibility", {})["auto_apply_efficiency_class_1"] = bool(
                 self.variables["cpu_compatibility.auto_apply_efficiency_class_1"].get()
@@ -2015,6 +2694,521 @@ class ConfigEditor:
             self.app.config_editor = None
 
 
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+
+def get_idle_seconds() -> float:
+    info = LASTINPUTINFO()
+    info.cbSize = ctypes.sizeof(info)
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    current_tick = ctypes.windll.kernel32.GetTickCount()
+    elapsed_ms = (current_tick - info.dwTime) & 0xFFFFFFFF
+    return elapsed_ms / 1000.0
+
+
+class FILETIME(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+
+
+WTS_CURRENT_SERVER_HANDLE = wintypes.HANDLE(0)
+WTS_ACTIVE = 0
+WTS_CLIENT_PROTOCOL_TYPE = 16
+WTS_SESSION_INFO_EX = 25
+WTS_SESSIONSTATE_LOCK = 0
+WINSTATIONNAME_LENGTH = 32
+USERNAME_LENGTH = 20
+DOMAIN_LENGTH = 17
+
+
+class WTS_SESSION_INFOW(ctypes.Structure):
+    _fields_ = [
+        ("SessionId", wintypes.DWORD),
+        ("pWinStationName", wintypes.LPWSTR),
+        ("State", ctypes.c_int),
+    ]
+
+
+class WTSINFOEX_LEVEL1_W(ctypes.Structure):
+    _fields_ = [
+        ("SessionId", wintypes.ULONG),
+        ("SessionState", ctypes.c_int),
+        ("SessionFlags", wintypes.LONG),
+        ("WinStationName", wintypes.WCHAR * (WINSTATIONNAME_LENGTH + 1)),
+        ("UserName", wintypes.WCHAR * (USERNAME_LENGTH + 1)),
+        ("DomainName", wintypes.WCHAR * (DOMAIN_LENGTH + 1)),
+        ("LogonTime", ctypes.c_longlong),
+        ("ConnectTime", ctypes.c_longlong),
+        ("DisconnectTime", ctypes.c_longlong),
+        ("LastInputTime", ctypes.c_longlong),
+        ("CurrentTime", ctypes.c_longlong),
+        ("IncomingBytes", wintypes.DWORD),
+        ("OutgoingBytes", wintypes.DWORD),
+        ("IncomingFrames", wintypes.DWORD),
+        ("OutgoingFrames", wintypes.DWORD),
+        ("IncomingCompressedBytes", wintypes.DWORD),
+        ("OutgoingCompressedBytes", wintypes.DWORD),
+    ]
+
+
+class WTSINFOEX_DATA(ctypes.Union):
+    _fields_ = [("WTSInfoExLevel1", WTSINFOEX_LEVEL1_W)]
+
+
+class WTSINFOEXW(ctypes.Structure):
+    _anonymous_ = ("Data",)
+    _fields_ = [("Level", wintypes.DWORD), ("Data", WTSINFOEX_DATA)]
+
+
+def _query_wts_value(session_id: int, info_class: int, value_type: Any) -> Any | None:
+    try:
+        wtsapi32 = ctypes.WinDLL("Wtsapi32.dll", use_last_error=True)
+        wtsapi32.WTSQuerySessionInformationW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        wtsapi32.WTSQuerySessionInformationW.restype = wintypes.BOOL
+        wtsapi32.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+        buffer = ctypes.c_void_p()
+        size = wintypes.DWORD()
+        if not wtsapi32.WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            int(session_id),
+            int(info_class),
+            ctypes.byref(buffer),
+            ctypes.byref(size),
+        ):
+            return None
+        try:
+            if int(size.value) < ctypes.sizeof(value_type):
+                return None
+            data = ctypes.string_at(buffer, int(size.value))
+            return value_type.from_buffer_copy(data)
+        finally:
+            wtsapi32.WTSFreeMemory(buffer)
+    except Exception:
+        LOGGER.debug("WTS query failed for session %s class %s", session_id, info_class, exc_info=True)
+        return None
+
+
+def get_current_process_session_id() -> int | None:
+    try:
+        session_id = wintypes.DWORD()
+        kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+        kernel32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
+        if kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session_id)):
+            return int(session_id.value)
+    except Exception:
+        LOGGER.debug("Could not determine current Windows session", exc_info=True)
+    return None
+
+
+def list_active_rdp_sessions(max_idle_seconds: float) -> list[dict[str, Any]]:
+    """Return connected, unlocked and recently used RDP sessions."""
+    try:
+        wtsapi32 = ctypes.WinDLL("Wtsapi32.dll", use_last_error=True)
+        wtsapi32.WTSEnumerateSessionsW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.POINTER(WTS_SESSION_INFOW)),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        wtsapi32.WTSEnumerateSessionsW.restype = wintypes.BOOL
+        wtsapi32.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+        sessions_ptr = ctypes.POINTER(WTS_SESSION_INFOW)()
+        count = wintypes.DWORD()
+        if not wtsapi32.WTSEnumerateSessionsW(
+            WTS_CURRENT_SERVER_HANDLE, 0, 1, ctypes.byref(sessions_ptr), ctypes.byref(count)
+        ):
+            return []
+        active: list[dict[str, Any]] = []
+        current_session_id = get_current_process_session_id()
+        try:
+            for index in range(int(count.value)):
+                session = sessions_ptr[index]
+                if int(session.State) != WTS_ACTIVE:
+                    continue
+                protocol = _query_wts_value(int(session.SessionId), WTS_CLIENT_PROTOCOL_TYPE, wintypes.USHORT)
+                if protocol is None or int(protocol.value) != 2:
+                    continue
+                info = _query_wts_value(int(session.SessionId), WTS_SESSION_INFO_EX, WTSINFOEXW)
+                idle_seconds: float | None = None
+                unlocked = True
+                user_name = ""
+                if info is not None and int(info.Level) == 1:
+                    level = info.WTSInfoExLevel1
+                    user_name = str(level.UserName).strip()
+                    if int(level.SessionFlags) == WTS_SESSIONSTATE_LOCK:
+                        unlocked = False
+                    if int(level.CurrentTime) > 0 and int(level.LastInputTime) > 0:
+                        idle_seconds = max(
+                            0.0,
+                            (int(level.CurrentTime) - int(level.LastInputTime)) / 10_000_000.0,
+                        )
+                elif current_session_id == int(session.SessionId):
+                    try:
+                        idle_seconds = get_idle_seconds()
+                    except Exception:
+                        idle_seconds = None
+                else:
+                    # Without session details we cannot reliably distinguish an
+                    # active user from a stale or locked session.
+                    continue
+                if not unlocked:
+                    continue
+                if idle_seconds is None or idle_seconds > max_idle_seconds:
+                    continue
+                active.append({
+                    "session_id": int(session.SessionId),
+                    "station": str(session.pWinStationName or ""),
+                    "user": user_name,
+                    "idle_seconds": idle_seconds,
+                })
+        finally:
+            wtsapi32.WTSFreeMemory(ctypes.cast(sessions_ptr, ctypes.c_void_p))
+        return active
+    except Exception:
+        LOGGER.debug("Could not enumerate Remote Desktop sessions", exc_info=True)
+        return []
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
+
+
+def filetime_value(value: FILETIME) -> int:
+    return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+
+
+def get_system_times_snapshot() -> tuple[int, int, int]:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetSystemTimes.argtypes = [ctypes.POINTER(FILETIME), ctypes.POINTER(FILETIME), ctypes.POINTER(FILETIME)]
+    kernel32.GetSystemTimes.restype = wintypes.BOOL
+    idle = FILETIME()
+    kernel = FILETIME()
+    user = FILETIME()
+    if not kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return filetime_value(idle), filetime_value(kernel), filetime_value(user)
+
+
+def list_process_snapshot() -> list[dict[str, Any]]:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot == INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    records: list[dict[str, Any]] = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        success = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while success:
+            records.append({
+                "pid": int(entry.th32ProcessID),
+                "ppid": int(entry.th32ParentProcessID),
+                "name": str(entry.szExeFile),
+            })
+            success = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return records
+
+
+def get_process_image_path(pid: int) -> str:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return ""
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return ""
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def is_windows_system_process(process: dict[str, Any]) -> bool:
+    pid = int(process.get("pid", 0))
+    name = str(process.get("name", "")).strip().lower()
+    path = str(process.get("path", "")).strip()
+    if pid <= 4 or pid == os.getpid() or name in KNOWN_WINDOWS_PROCESS_NAMES:
+        return True
+    if path:
+        windows_root = os.path.normcase(os.path.abspath(os.environ.get("SystemRoot", r"C:\Windows"))).rstrip("\\/")
+        process_path = os.path.normcase(os.path.abspath(path))
+        if process_path == windows_root or process_path.startswith(windows_root + os.sep):
+            return True
+    return False
+
+
+def list_processes_for_picker() -> list[dict[str, Any]]:
+    records = list_process_snapshot()
+    result: list[dict[str, Any]] = []
+    for record in records:
+        pid = int(record.get("pid", 0))
+        item = dict(record)
+        item["path"] = get_process_image_path(pid)
+        item["is_windows"] = is_windows_system_process(item)
+        result.append(item)
+    result.sort(key=lambda item: (str(item.get("name", "")).lower(), int(item.get("pid", 0))))
+    return result
+
+
+def get_process_cpu_time(pid: int) -> int | None:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(FILETIME),
+        ctypes.POINTER(FILETIME),
+        ctypes.POINTER(FILETIME),
+        ctypes.POINTER(FILETIME),
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return None
+    try:
+        creation = FILETIME()
+        exit_time = FILETIME()
+        kernel = FILETIME()
+        user = FILETIME()
+        if not kernel32.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exit_time), ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+        return filetime_value(kernel) + filetime_value(user)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def process_name_matches(name: str, patterns: list[str]) -> bool:
+    lowered = name.lower()
+    return any(fnmatch.fnmatchcase(lowered, str(pattern).strip().lower()) for pattern in patterns if str(pattern).strip())
+
+
+class NvmlMonitor:
+    class Utilization(ctypes.Structure):
+        _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+    def __init__(self) -> None:
+        self.library: Any = None
+        self.handles: list[ctypes.c_void_p] = []
+        self.available = False
+        self._attempted = False
+
+    @staticmethod
+    def _function(library: Any, *names: str) -> Any:
+        for name in names:
+            function = getattr(library, name, None)
+            if function is not None:
+                return function
+        raise AttributeError(names[0])
+
+    def initialize(self) -> bool:
+        if self._attempted:
+            return self.available
+        self._attempted = True
+        try:
+            library = ctypes.WinDLL("nvml.dll")
+            init = self._function(library, "nvmlInit_v2", "nvmlInit")
+            init.restype = ctypes.c_int
+            if init() != 0:
+                return False
+            get_count = self._function(library, "nvmlDeviceGetCount_v2", "nvmlDeviceGetCount")
+            get_count.argtypes = [ctypes.POINTER(ctypes.c_uint)]
+            count = ctypes.c_uint()
+            if get_count(ctypes.byref(count)) != 0:
+                return False
+            get_handle = self._function(library, "nvmlDeviceGetHandleByIndex_v2", "nvmlDeviceGetHandleByIndex")
+            get_handle.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)]
+            handles: list[ctypes.c_void_p] = []
+            for index in range(int(count.value)):
+                handle = ctypes.c_void_p()
+                if get_handle(index, ctypes.byref(handle)) == 0:
+                    handles.append(handle)
+            self.library = library
+            self.handles = handles
+            self.available = bool(handles)
+            LOGGER.info("NVML monitoring available for %s NVIDIA GPU(s)", len(handles))
+        except Exception:
+            LOGGER.info("NVML monitoring is not available", exc_info=True)
+            self.available = False
+        return self.available
+
+    def sample(self) -> dict[str, float] | None:
+        if not self.initialize() or self.library is None:
+            return None
+        maximum = {"gpu": 0.0, "encoder": 0.0, "decoder": 0.0}
+        try:
+            get_utilization = self._function(self.library, "nvmlDeviceGetUtilizationRates")
+            get_utilization.argtypes = [ctypes.c_void_p, ctypes.POINTER(self.Utilization)]
+            encoder_function = getattr(self.library, "nvmlDeviceGetEncoderUtilization", None)
+            decoder_function = getattr(self.library, "nvmlDeviceGetDecoderUtilization", None)
+            for function in (encoder_function, decoder_function):
+                if function is not None:
+                    function.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+                    function.restype = ctypes.c_int
+            for handle in self.handles:
+                utilization = self.Utilization()
+                if get_utilization(handle, ctypes.byref(utilization)) == 0:
+                    maximum["gpu"] = max(maximum["gpu"], float(utilization.gpu))
+                for key, function in (("encoder", encoder_function), ("decoder", decoder_function)):
+                    if function is None:
+                        continue
+                    value = ctypes.c_uint()
+                    sampling_period = ctypes.c_uint()
+                    if function(handle, ctypes.byref(value), ctypes.byref(sampling_period)) == 0:
+                        maximum[key] = max(maximum[key], float(value.value))
+            return maximum
+        except Exception:
+            LOGGER.exception("NVML sampling failed")
+            return None
+
+    def shutdown(self) -> None:
+        if self.library is not None:
+            try:
+                shutdown = getattr(self.library, "nvmlShutdown", None)
+                if shutdown is not None:
+                    shutdown()
+            except Exception:
+                LOGGER.exception("NVML shutdown failed")
+        self.library = None
+        self.handles = []
+        self.available = False
+
+
+class SystemLoadMonitor:
+    def __init__(self) -> None:
+        self.previous_system: tuple[int, int, int] | None = None
+        self.previous_process_times: dict[int, int] = {}
+        self.nvml = NvmlMonitor()
+
+    def reset(self) -> None:
+        self.previous_system = None
+        self.previous_process_times.clear()
+
+    @staticmethod
+    def _descendants(root_pids: set[int], children: dict[int, list[int]]) -> set[int]:
+        result: set[int] = set()
+        pending = list(root_pids)
+        while pending:
+            parent = pending.pop()
+            for child in children.get(parent, []):
+                if child not in result:
+                    result.add(child)
+                    pending.append(child)
+        return result
+
+    def sample(self, config: dict[str, Any]) -> dict[str, Any]:
+        current_system = get_system_times_snapshot()
+        processes = list_process_snapshot()
+        children: dict[int, list[int]] = {}
+        by_pid: dict[int, dict[str, Any]] = {}
+        for process in processes:
+            pid = int(process["pid"])
+            by_pid[pid] = process
+            children.setdefault(int(process["ppid"]), []).append(pid)
+
+        always_patterns = [str(item) for item in config.get("always_process_patterns", [])]
+        load_patterns = [str(item) for item in config.get("load_process_patterns", [])]
+        launcher_patterns = [str(item) for item in config.get("launcher_process_patterns", [])]
+        container_patterns = [str(item) for item in config.get("container_process_patterns", [])]
+        include_children = bool(config.get("include_process_children", True))
+
+        always_pids = {pid for pid, process in by_pid.items() if process_name_matches(str(process["name"]), always_patterns)}
+        load_pids = {pid for pid, process in by_pid.items() if process_name_matches(str(process["name"]), load_patterns)}
+        launcher_pids = {pid for pid, process in by_pid.items() if process_name_matches(str(process["name"]), launcher_patterns)}
+        container_pids = {pid for pid, process in by_pid.items() if process_name_matches(str(process["name"]), container_patterns)}
+
+        if include_children:
+            load_pids |= self._descendants(load_pids, children)
+            container_pids |= self._descendants(container_pids, children)
+        launcher_child_pids = self._descendants(launcher_pids, children)
+        monitored_pids = load_pids | launcher_child_pids | container_pids
+
+        current_process_times: dict[int, int] = {}
+        for pid in monitored_pids:
+            value = get_process_cpu_time(pid)
+            if value is not None:
+                current_process_times[pid] = value
+
+        overall_cpu = 0.0
+        process_cpu = 0.0
+        if self.previous_system is not None:
+            previous_idle, previous_kernel, previous_user = self.previous_system
+            idle, kernel, user = current_system
+            total_delta = max(0, (kernel - previous_kernel) + (user - previous_user))
+            idle_delta = max(0, idle - previous_idle)
+            if total_delta > 0:
+                overall_cpu = max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta))
+                process_delta = 0
+                for pid, value in current_process_times.items():
+                    previous = self.previous_process_times.get(pid)
+                    if previous is not None and value >= previous:
+                        process_delta += value - previous
+                process_cpu = max(0.0, min(100.0, 100.0 * process_delta / total_delta))
+
+        self.previous_system = current_system
+        self.previous_process_times = current_process_times
+        gpu = self.nvml.sample() if bool(config.get("gpu_enabled", True)) else None
+        matched_names = sorted({str(by_pid[pid]["name"]) for pid in monitored_pids if pid in by_pid})
+
+        rdp_sessions: list[dict[str, Any]] = []
+        if bool(config.get("rdp_session_trigger_enabled", True)):
+            idle_minutes = max(1, int(config.get("rdp_idle_minutes", 5)))
+            rdp_sessions = list_active_rdp_sessions(float(idle_minutes * 60))
+
+        always_names = sorted({str(by_pid[pid]["name"]) for pid in always_pids if pid in by_pid})
+        for session in rdp_sessions:
+            user = str(session.get("user", "")).strip()
+            always_names.append(f"Remote Desktop ({user})" if user else "Remote Desktop")
+        return {
+            "cpu": overall_cpu,
+            "process_cpu": process_cpu,
+            "always_active": bool(always_pids or rdp_sessions),
+            "always_names": always_names,
+            "rdp_active": bool(rdp_sessions),
+            "rdp_sessions": rdp_sessions,
+            "matched_names": matched_names,
+            "gpu": gpu,
+        }
+
+
 class PowerPlanSwitcherApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
@@ -2030,13 +3224,21 @@ class PowerPlanSwitcherApp:
         self.popup_after_ids: list[str] = []
         self.is_switching = False
         self.last_applied_profile_id: str | None = None
+        self.dynamic_state: str | None = None
+        self.dynamic_candidate_state: str | None = None
+        self.dynamic_candidate_since: float | None = None
+        self.dynamic_last_transition: float = 0.0
+        self.manual_override_pending: bool = False
+        self.dynamic_after_id: str | None = None
+        self.load_monitor = SystemLoadMonitor()
         self.cpu_info = detect_cpu_info()
         self.mutex_handle = create_mutex_or_exit(self.config)
 
         self.reload_config(show_confirmation=False, initial=True)
         self._start_tray_icon()
         self._start_hotkey()
-        self.root.after(50, self._process_action_queue)
+        self.root.after(ACTION_QUEUE_POLL_MS, self._process_action_queue)
+        self._schedule_dynamic_check(750)
         if self.config["app"].get("apply_active_profile_on_start"):
             self._apply_active_profile_settings_only()
         if self.config["app"].get("show_startup_popup", True):
@@ -2085,8 +3287,51 @@ class PowerPlanSwitcherApp:
                 self.show_popup(self.t("error", error=exc), error=True)
             return []
 
+    def _detect_active_profile_id(self) -> str | None:
+        try:
+            active_guid = get_active_plan_guid()
+            plans = list_power_plans()
+            candidates = ordered_profile_ids(self.config, enabled_only=False)
+            if self.last_applied_profile_id in candidates:
+                candidates.remove(self.last_applied_profile_id)
+                candidates.insert(0, self.last_applied_profile_id)
+            for profile_id in candidates:
+                profile = self.config.get("profiles", {}).get(profile_id)
+                if not isinstance(profile, dict):
+                    continue
+                try:
+                    if resolve_plan_guid(profile, plans, self.config) == active_guid:
+                        return profile_id
+                except Exception:
+                    continue
+        except Exception:
+            LOGGER.debug("Could not detect active profile for tray", exc_info=True)
+        return self.last_applied_profile_id if self.last_applied_profile_id in self.config.get("profiles", {}) else None
+
+    def _active_profile_name(self) -> str:
+        profile_id = self._detect_active_profile_id()
+        if profile_id is None:
+            return self.t("active_profile_unknown")
+        profile = self.config.get("profiles", {}).get(profile_id, {})
+        return str(profile.get("display_name", profile_id))
+
+    def _tray_title(self) -> str:
+        text = f"{APP_NAME} - {self.t('active_profile_tray', name=self._active_profile_name())}"
+        return text[:127]
+
+    def _update_tray_status(self, rebuild_menu: bool = True) -> None:
+        if self.tray_icon is None:
+            return
+        try:
+            self.tray_icon.title = self._tray_title()
+            if rebuild_menu:
+                self.tray_icon.menu = self._create_tray_menu()
+                self.tray_icon.update_menu()
+        except Exception:
+            LOGGER.debug("Could not update tray status", exc_info=True)
+
     def _start_tray_icon(self) -> None:
-        self.tray_icon = pystray.Icon(APP_NAME, self._load_icon_image(), f"{APP_NAME} v{APP_VERSION}", self._create_tray_menu())
+        self.tray_icon = pystray.Icon(APP_NAME, self._load_icon_image(), self._tray_title(), self._create_tray_menu())
         threading.Thread(target=self.tray_icon.run, name="TrayIcon", daemon=True).start()
 
     def _profile_menu_action(self, profile_id: str) -> Callable[[Any, Any], None]:
@@ -2126,6 +3371,12 @@ class PowerPlanSwitcherApp:
             profile_items.append(pystray.MenuItem(self.t("apply_profile", name=display_name), self._profile_menu_action(profile_id)))
         hotkey_name = HotkeyThread.display_name(self.config["app"]["hotkey"], self.language)
         return pystray.Menu(
+            pystray.MenuItem(
+                self.t("active_profile_tray", name=self._active_profile_name()),
+                self._tray_noop,
+                enabled=False,
+            ),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem(self.t("toggle", hotkey=hotkey_name), self._tray_toggle, default=True),
             *profile_items,
             pystray.Menu.SEPARATOR,
@@ -2193,15 +3444,184 @@ class PowerPlanSwitcherApp:
             pass
         try:
             if self.root.winfo_exists():
-                self.root.after(50, self._process_action_queue)
+                self.root.after(ACTION_QUEUE_POLL_MS, self._process_action_queue)
         except tk.TclError:
             pass
+
+    def _cancel_dynamic_check(self) -> None:
+        if self.dynamic_after_id is None:
+            return
+        try:
+            self.root.after_cancel(self.dynamic_after_id)
+        except tk.TclError:
+            pass
+        self.dynamic_after_id = None
+
+    def _dynamic_mode(self) -> str:
+        dynamic = self.config.get("app", {}).get("dynamic_switch", {})
+        return str(dynamic.get("mode", "disabled")).lower()
+
+    def _reset_dynamic_state(self) -> None:
+        self.dynamic_state = None
+        self.dynamic_candidate_state = None
+        self.dynamic_candidate_since = None
+        self.dynamic_last_transition = 0.0
+        self.manual_override_pending = False
+        self.load_monitor.reset()
+
+    def _schedule_dynamic_check(self, delay_ms: int = DYNAMIC_ACTIVE_POLL_MS) -> None:
+        self._cancel_dynamic_check()
+        if self._dynamic_mode() == "disabled":
+            self._reset_dynamic_state()
+            return
+        try:
+            if self.root.winfo_exists():
+                self.dynamic_after_id = self.root.after(max(250, int(delay_ms)), self._check_dynamic_switch)
+        except tk.TclError:
+            self.dynamic_after_id = None
+
+    def _apply_dynamic_state(self, state: str, profile_id: str) -> bool:
+        if profile_id not in self.config.get("profiles", {}):
+            LOGGER.error("Automatic profile does not exist: %s", profile_id)
+            return False
+        if self.apply_profile(profile_id, automatic=True):
+            self.dynamic_state = state
+            self.dynamic_candidate_state = None
+            self.dynamic_candidate_since = None
+            self.dynamic_last_transition = time.monotonic()
+            return True
+        return False
+
+    def _check_idle_dynamic(self, dynamic: dict[str, Any]) -> int:
+        idle_config = dynamic.get("idle", {})
+        idle_seconds = get_idle_seconds()
+        threshold_seconds = max(60, int(idle_config.get("idle_minutes", 10)) * 60)
+        target_state = "idle" if idle_seconds >= threshold_seconds else "active"
+        profile_key = "idle_profile_id" if target_state == "idle" else "active_profile_id"
+        profile_id = str(idle_config.get(profile_key, ""))
+        preserve_manual = bool(dynamic.get("manual_override_until_transition", True))
+        if preserve_manual and self.manual_override_pending:
+            if self.dynamic_state is None:
+                self.dynamic_state = target_state
+                self.manual_override_pending = False
+                return DYNAMIC_IDLE_POLL_MS if target_state == "idle" else DYNAMIC_ACTIVE_POLL_MS
+            self.manual_override_pending = False
+        should_apply = target_state != self.dynamic_state
+        if not preserve_manual and self.last_applied_profile_id != profile_id:
+            should_apply = True
+        if should_apply and not self.is_switching:
+            self._apply_dynamic_state(target_state, profile_id)
+        return DYNAMIC_IDLE_POLL_MS if self.dynamic_state == "idle" else DYNAMIC_ACTIVE_POLL_MS
+
+    def _check_load_dynamic(self, dynamic: dict[str, Any]) -> int:
+        load_config = dynamic.get("load", {})
+        metrics = self.load_monitor.sample(load_config)
+        gpu_data = metrics.get("gpu") or {}
+        gpu_value = max(float(gpu_data.get("gpu", 0.0)), float(gpu_data.get("encoder", 0.0)), float(gpu_data.get("decoder", 0.0)))
+        gpu_enabled = bool(load_config.get("gpu_enabled", True)) and metrics.get("gpu") is not None
+
+        immediate_active = bool(metrics.get("always_active"))
+        if immediate_active:
+            high_profile_id = str(load_config.get("high_profile_id", ""))
+            self.manual_override_pending = False
+            self.dynamic_candidate_state = None
+            self.dynamic_candidate_since = None
+            if not self.is_switching and (
+                self.dynamic_state != "high" or self.last_applied_profile_id != high_profile_id
+            ):
+                LOGGER.info(
+                    "Immediate process trigger: %s",
+                    ", ".join(metrics.get("always_names", [])),
+                )
+                self._apply_dynamic_state("high", high_profile_id)
+            else:
+                self.dynamic_state = "high"
+            return SYSTEM_LOAD_POLL_MS
+
+        high_signal = (
+            float(metrics.get("cpu", 0.0)) >= float(load_config.get("cpu_high_percent", 35))
+            or float(metrics.get("process_cpu", 0.0)) >= float(load_config.get("process_high_percent", 3))
+            or (gpu_enabled and gpu_value >= float(load_config.get("gpu_high_percent", 25)))
+        )
+        low_signal = (
+            float(metrics.get("cpu", 0.0)) <= float(load_config.get("cpu_low_percent", 15))
+            and float(metrics.get("process_cpu", 0.0)) <= float(load_config.get("process_low_percent", 1))
+            and (not gpu_enabled or gpu_value <= float(load_config.get("gpu_low_percent", 10)))
+        )
+
+        desired_state: str | None = "high" if high_signal else ("low" if low_signal else None)
+        now = time.monotonic()
+        preserve_manual = bool(dynamic.get("manual_override_until_transition", True))
+        if preserve_manual and self.manual_override_pending and desired_state is not None:
+            if self.dynamic_state is None:
+                self.dynamic_state = desired_state
+                self.dynamic_candidate_state = None
+                self.dynamic_candidate_since = None
+                self.manual_override_pending = False
+                return SYSTEM_LOAD_POLL_MS
+            self.manual_override_pending = False
+        if desired_state is None:
+            self.dynamic_candidate_state = None
+            self.dynamic_candidate_since = None
+            return SYSTEM_LOAD_POLL_MS
+        if desired_state == self.dynamic_state:
+            self.dynamic_candidate_state = None
+            self.dynamic_candidate_since = None
+            if not preserve_manual and not self.is_switching:
+                profile_key = "high_profile_id" if desired_state == "high" else "low_profile_id"
+                profile_id = str(load_config.get(profile_key, ""))
+                if self.last_applied_profile_id != profile_id:
+                    self._apply_dynamic_state(desired_state, profile_id)
+            return SYSTEM_LOAD_POLL_MS
+
+        if self.dynamic_candidate_state != desired_state:
+            self.dynamic_candidate_state = desired_state
+            self.dynamic_candidate_since = now
+            LOGGER.debug(
+                "Automatic load candidate=%s cpu=%.1f monitored=%.1f gpu=%.1f processes=%s",
+                desired_state,
+                float(metrics.get("cpu", 0.0)),
+                float(metrics.get("process_cpu", 0.0)),
+                gpu_value,
+                ", ".join(metrics.get("matched_names", [])),
+            )
+            return SYSTEM_LOAD_POLL_MS
+
+        required_delay = float(load_config.get("high_delay_seconds", 15) if desired_state == "high" else load_config.get("low_delay_seconds", 120))
+        candidate_age = now - (self.dynamic_candidate_since or now)
+        minimum_hold = float(load_config.get("minimum_hold_seconds", 30))
+        hold_ok = self.dynamic_last_transition <= 0 or (now - self.dynamic_last_transition) >= minimum_hold
+        if candidate_age >= required_delay and hold_ok and not self.is_switching:
+            profile_key = "high_profile_id" if desired_state == "high" else "low_profile_id"
+            self._apply_dynamic_state(desired_state, str(load_config.get(profile_key, "")))
+        return SYSTEM_LOAD_POLL_MS
+
+    def _check_dynamic_switch(self) -> None:
+        self.dynamic_after_id = None
+        next_delay = DYNAMIC_ACTIVE_POLL_MS
+        try:
+            dynamic = self.config.get("app", {}).get("dynamic_switch", {})
+            mode = self._dynamic_mode()
+            if mode == "disabled":
+                self._reset_dynamic_state()
+                return
+            if mode == "idle":
+                next_delay = self._check_idle_dynamic(dynamic)
+            elif mode == "load":
+                next_delay = self._check_load_dynamic(dynamic)
+        except Exception:
+            LOGGER.exception("Automatic profile switching failed")
+        finally:
+            if self._dynamic_mode() != "disabled":
+                self._schedule_dynamic_check(next_delay)
 
     def reload_config(self, show_confirmation: bool = True, initial: bool = False) -> None:
         try:
             self.config = load_or_create_config()
             validate_config(self.config)
             self.config["app"]["autostart"] = is_autostart_enabled()
+            self._reset_dynamic_state()
+            self._cancel_dynamic_check()
             if self.config["app"]["autostart"]:
                 try:
                     # Refresh the command after an EXE rename or application move.
@@ -2211,8 +3631,8 @@ class PowerPlanSwitcherApp:
             if not initial:
                 self._start_hotkey()
                 if self.tray_icon is not None:
-                    self.tray_icon.menu = self._create_tray_menu()
-                    self.tray_icon.update_menu()
+                    self._update_tray_status(rebuild_menu=True)
+                self._schedule_dynamic_check(250)
             if show_confirmation:
                 self.show_popup(self.t("config_reloaded"))
         except ValueError as exc:
@@ -2275,9 +3695,9 @@ class PowerPlanSwitcherApp:
             LOGGER.exception("Could not toggle profile")
             self.show_popup(self.t("error", error=exc), error=True)
 
-    def apply_profile(self, profile_id: str) -> None:
+    def apply_profile(self, profile_id: str, automatic: bool = False) -> bool:
         if self.is_switching:
-            return
+            return False
         self.is_switching = True
         try:
             profile = self.config["profiles"][profile_id]
@@ -2291,10 +3711,20 @@ class PowerPlanSwitcherApp:
             else:
                 self.show_popup(self.t("profile_active", name=display_name))
             self.last_applied_profile_id = profile_id
+            self._update_tray_status(rebuild_menu=True)
+            dynamic = self.config.get("app", {}).get("dynamic_switch", {})
+            if (
+                not automatic
+                and str(dynamic.get("mode", "disabled")).lower() != "disabled"
+                and bool(dynamic.get("manual_override_until_transition", True))
+            ):
+                self.manual_override_pending = True
             LOGGER.info("Applied profile %s to plan %s", profile_id, plan_guid)
+            return True
         except Exception as exc:
             LOGGER.exception("Could not apply profile %s", profile_id)
             self.show_popup(self.t("error", error=exc), error=True)
+            return False
         finally:
             self.is_switching = False
 
@@ -2388,6 +3818,8 @@ class PowerPlanSwitcherApp:
             self.popup = None
 
     def exit_app(self) -> None:
+        self._cancel_dynamic_check()
+        self.load_monitor.nvml.shutdown()
         self._stop_hotkey()
         self.close_popup()
         if self.tray_icon is not None:

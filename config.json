@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 8,
   "app": {
     "language": "de",
     "autostart": false,
@@ -25,6 +25,55 @@
     },
     "cpu_compatibility": {
       "auto_apply_efficiency_class_1": true
+    },
+    "dynamic_switch": {
+      "mode": "disabled",
+      "manual_override_until_transition": true,
+      "idle": {
+        "active_profile_id": "performance",
+        "idle_profile_id": "summer",
+        "idle_minutes": 10
+      },
+      "load": {
+        "low_profile_id": "summer",
+        "high_profile_id": "performance",
+        "cpu_high_percent": 35,
+        "cpu_low_percent": 15,
+        "process_high_percent": 3,
+        "process_low_percent": 1,
+        "gpu_enabled": true,
+        "gpu_high_percent": 25,
+        "gpu_low_percent": 10,
+        "high_delay_seconds": 15,
+        "low_delay_seconds": 120,
+        "minimum_hold_seconds": 30,
+        "include_process_children": true,
+        "always_process_patterns": [],
+        "load_process_patterns": [
+          "PalServer-Win64-Shipping.exe",
+          "PalServer.exe",
+          "*Server-Win64-Shipping.exe",
+          "ffmpeg.exe",
+          "sunshine.exe"
+        ],
+        "launcher_process_patterns": [
+          "DGSM*.exe",
+          "dgsm*.exe"
+        ],
+        "container_process_patterns": [
+          "vmmem*",
+          "wslhost.exe",
+          "wsl.exe",
+          "wslservice.exe",
+          "wslrelay.exe",
+          "com.docker.backend.exe",
+          "com.docker.build.exe",
+          "Docker Desktop.exe",
+          "dockerd.exe"
+        ],
+        "rdp_session_trigger_enabled": true,
+        "rdp_idle_minutes": 5
+      }
     }
   },
   "profiles": {
